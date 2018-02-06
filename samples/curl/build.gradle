@@ -1,0 +1,11 @@
+apply plugin: 'konan'
+
+konan.targets = ['macbook', 'linux']
+
+konanArtifacts {
+    program('Curl') {
+        libraries {
+            artifact 'libcurl'
+        }
+    }
+}

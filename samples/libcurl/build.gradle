@@ -11,10 +11,4 @@ konanArtifacts {
             includeDirs.headerFilterOnly '/opt/local/include', '/usr/local/include'
         }
     }
-
-    program('Curl') {
-        libraries {
-            artifact 'libcurl'
-        }
-    }
 }
