@@ -1,4 +1,5 @@
 apply plugin: 'konan'
+apply plugin: 'maven-publish'
 
 konan.targets = ['macbook', 'linux']
 
@@ -12,3 +13,29 @@ konanArtifacts {
         }
     }
 }
+
+def localMavenRepo="file://" + new File(System.properties['user.home']) + '/ws/.git-trees/repository-experiments/.m2'
+publishing {
+    repositories {
+        maven {
+            url = localMavenRepo
+        }
+    }
+    publications{
+        mavenKonan(MavenPublication){
+            groupId 'org.jetbrains.kotlin.native'
+            artifactId 'libcurl'
+            version '1.0'
+ 
+            //println(">>>>>>>>>> ${konanArtifacts.libcurl.properties}")
+            //println(">>>>>>>>>> ${konanArtifacts.libcurl instanceof SoftwareComponent}")
+            //println(">>>>>>>>>> ${konanArtifacts.properties}")
+            println("${publishing.publications.mavenKonan.properties}")
+            // konanArtifacts.libcurl.getArtifactByTarget('host').name returns /Users/minamoto/ws/.git-trees/repository-experiments/samples/libcurl/libcurl.klib 
+            // but expected project.file("build/konan/libs/macbook/libcurl.klib")
+            //artifact konanArtifacts.libcurl.getArtifactByTarget('host').name
+            artifact project.file("build/konan/libs/macbook/libcurl.klib")
+        }
+    }
+}
+
