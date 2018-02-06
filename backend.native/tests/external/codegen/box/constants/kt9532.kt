@@ -1,5 +1,3 @@
-// TODO: muted automatically, investigate should it be ran for JS or not
-// IGNORE_BACKEND: NATIVE
 
 object A {
     const val a: String = "$"
@@ -22,7 +20,10 @@ object B {
 fun box(): String {
     if (A.a !== B.a) return "Fail 1: A.a !== B.a"
 
-    if (A.b !== B.b) return "Fail 2: A.b !== B.b"
+    if (A.b !== B.b) {
+        println("${A.b} & ${B.b}")
+        return "Fail 2: A.b !== B.b"
+    }
 
     if (A.c !== B.c) return "Fail 3: A.c !== B.c"
 
