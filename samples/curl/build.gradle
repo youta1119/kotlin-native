@@ -2,10 +2,27 @@ apply plugin: 'konan'
 
 konan.targets = ['macbook', 'linux']
 
+def localMavenRepo="file://" + new File(System.properties['user.home']) + '/ws/.git-trees/repository-experiments/.m2'
+
+repositories {
+    maven {
+        url = localMavenRepo
+    }
+}
+
+configurations {
+  hh
+  //default.extendsFrom(hh)
+}
+
+dependencies {
+  hh 'org.jetbrains.kotlin.native:libcurl:1.0'
+}
+
 konanArtifacts {
     program('Curl') {
-        libraries {
-            artifact 'libcurl'
-        }
+      libraries {
+        file configurations.hh.files.first().path
+      }
     }
 }
