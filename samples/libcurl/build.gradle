@@ -3,6 +3,9 @@ apply plugin: 'maven-publish'
 
 konan.targets = ['macbook', 'linux']
 
+group 'org.jetbrains.kotlin.native'
+version '1.0'
+
 konanArtifacts {
     interop('libcurl') {
         target('linux') {
@@ -14,20 +17,11 @@ konanArtifacts {
     }
 }
 
-def localMavenRepo="file://" + new File(System.properties['user.home']) + '/ws/.git-trees/repository-experiments/.m2'
+def localMavenRepo="file://" + new File(System.properties['user.home']) + '/.m2-kliban'
 publishing {
     repositories {
         maven {
             url = localMavenRepo
-        }
-    }
-    publications{
-        mavenKonan(MavenPublication){
-            groupId 'org.jetbrains.kotlin.native'
-            artifactId 'libcurl'
-            version '1.0'
-
-            artifact konanArtifacts.libcurl.getArtifactByTarget('host').path
         }
     }
 }

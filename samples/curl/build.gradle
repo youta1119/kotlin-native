@@ -2,7 +2,7 @@ apply plugin: 'konan'
 
 konan.targets = ['macbook', 'linux']
 
-def localMavenRepo="file://" + new File(System.properties['user.home']) + '/ws/.git-trees/repository-experiments/.m2'
+def localMavenRepo="file://" + new File(System.properties['user.home']) + '/.m2-kliban'
 
 repositories {
     maven {
@@ -12,7 +12,6 @@ repositories {
 
 configurations {
   hh
-  //default.extendsFrom(hh)
 }
 
 dependencies {
