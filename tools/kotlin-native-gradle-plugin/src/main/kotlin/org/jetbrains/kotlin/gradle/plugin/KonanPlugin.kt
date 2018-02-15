@@ -19,7 +19,10 @@ package org.jetbrains.kotlin.gradle.plugin
 import org.gradle.api.*
 import org.gradle.api.file.FileCollection
 import org.gradle.api.internal.project.ProjectInternal
+import org.gradle.api.plugins.AppliedPlugin
 import org.gradle.api.plugins.BasePlugin
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.tooling.provider.model.ToolingModelBuilderRegistry
 import org.jetbrains.kotlin.gradle.plugin.KonanPlugin.Companion.COMPILE_ALL_TASK_NAME
 import org.jetbrains.kotlin.gradle.plugin.tasks.*
@@ -271,7 +274,7 @@ class KonanPlugin @Inject constructor(private val registry: ToolingModelBuilderR
         project.tasks.create(KONAN_DOWNLOAD_TASK_NAME, KonanCompilerDownloadTask::class.java)
         project.tasks.create(KONAN_GENERATE_CMAKE_TASK_NAME, KonanGenerateCMakeTask::class.java)
         project.extensions.create(KONAN_EXTENSION_NAME, KonanExtension::class.java)
-        project.extensions.create(KonanArtifactContainer::class.java, ARTIFACTS_CONTAINER_NAME, KonanArtifactContainer::class.java, project)
+        val container =project.extensions.create(KonanArtifactContainer::class.java, ARTIFACTS_CONTAINER_NAME, KonanArtifactContainer::class.java, project)
 
         // Set additional project properties like konan.home, konan.build.targets etc.
         if (!project.hasProperty(ProjectProperty.KONAN_HOME)) {
@@ -305,6 +308,22 @@ class KonanPlugin @Inject constructor(private val registry: ToolingModelBuilderR
                                 args(project.extensions.extraProperties.get("runArgs").toString().split(' '))
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        project.pluginManager.withPlugin("maven-publish") {
+            container.all {
+                val buildingConfig = it
+                val artifactId = buildingConfig.name
+                project.extensions.configure(PublishingExtension::class.java) {
+                    it.publications.create(artifactId, MavenPublication::class.java){
+                        it.artifactId = artifactId
+                        it.groupId = project.group.toString()
+                        it.version = project.version.toString()
+                        // TODO: host?
+                        it.artifact(buildingConfig.findArtifactByTarget("host")!!.absolutePath)
                     }
                 }
             }
