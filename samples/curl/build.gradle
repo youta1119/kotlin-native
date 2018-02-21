@@ -14,13 +14,7 @@ konanArtifacts {
     program('Curl') {
         dependencies {
             artifactCurl_MACBOOK 'org.jetbrains.kotlin.native:libcurl:1.0'
-
         }
-      libraries {
-          file configurations.artifactCurl_MACBOOK.files.first().path
-
-      }
-
     }
 }
 
