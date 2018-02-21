@@ -83,6 +83,7 @@ abstract class KonanArtifactTask: KonanTargetableTask(), KonanArtifactSpec {
         super.init(target)
         this.destinationDir = destinationDir
         this.artifactName = artifactName
+        val configuration = project.configurations.create("artifact${artifactName}_${target.name}")
     }
 
     // DSL.
