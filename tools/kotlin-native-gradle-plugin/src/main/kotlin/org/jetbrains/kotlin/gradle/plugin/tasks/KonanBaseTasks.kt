@@ -20,6 +20,7 @@ import groovy.lang.Closure
 import org.gradle.api.Action
 import org.gradle.api.DefaultTask
 import org.gradle.api.Project
+import org.gradle.api.artifacts.Configuration
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
@@ -66,6 +67,7 @@ abstract class KonanArtifactTask: KonanTargetableTask(), KonanArtifactSpec {
 
     @Internal lateinit var destinationDir: File
     @Internal lateinit var artifactName: String
+    @Internal lateinit var configuration: Configuration
 
     protected val artifactFullName: String
         @Internal get() = "$artifactPrefix$artifactName$artifactSuffix"
@@ -83,7 +85,7 @@ abstract class KonanArtifactTask: KonanTargetableTask(), KonanArtifactSpec {
         super.init(target)
         this.destinationDir = destinationDir
         this.artifactName = artifactName
-        val configuration = project.configurations.create("artifact${artifactName}_${target.name}")
+        configuration = project.configurations.create("artifact${artifactName}_${target.name}")
     }
 
     // DSL.
