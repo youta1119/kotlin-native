@@ -108,7 +108,7 @@ private fun BoxCache.initCache(context: Context): LLVMValueRef {
     return if (context.config.produce.isNativeBinary) {
         context.llvm.staticData.createBoxes(this)
     } else {
-        context.llvm.staticData.addGlobal(cacheName, context.llvm.runtime.objHeaderPtrType, false)
+        context.llvm.staticData.addGlobal(cacheName, context.llvm.runtime.objHeaderType, false)
     }
 }
 
@@ -152,15 +152,14 @@ internal fun BoxCache.getCachedValue(codegen: FunctionGenerationContext, value: 
     // we should subtract range start to get index of the box
     val index = LLVMBuildSub(codegen.builder, value, start, "offset")!!
     val cache = LLVMGetNamedGlobal(codegen.context.llvmModule, cacheName)!!
-    val boxPointer = codegen.gep(cache, index)
-    return codegen.load(boxPointer)
+    return codegen.gep(cache, index)
 }
 
 private fun StaticData.createBoxes(box: BoxCache): LLVMValueRef {
     val kotlinType = context.ir.symbols.boxClasses[box.valueType]!!.descriptor.defaultType
     val (start, end) = box.getRange(context)
-    val values = (start..end).map { createKotlinObject(kotlinType, box.createConstant(it)) }
-    return placeGlobalConstArray(box.cacheName, context.llvm.runtime.objHeaderPtrType, values, true).llvm
+    val values = (start..end).map { createKotlinObjectInplace(kotlinType, box.createConstant(it)) }
+    return placeGlobalConstArray(box.cacheName, context.llvm.runtime.objHeaderType, values, true).llvm
 }
 
 private fun BoxCache.createConstant(value: Int) =
@@ -183,7 +182,7 @@ private val BoxCache.llvmType
         else            -> error("Cannot box value of type $valueType")
     }
 
-private val defalutCacheRange = mapOf(
+private val defaultCacheRange = mapOf(
         ValueType.BYTE  to (-128 to 128),
         ValueType.SHORT to (-128 to 127),
         ValueType.CHAR  to (0 to 255),
@@ -193,5 +192,5 @@ private val defalutCacheRange = mapOf(
 
 // TODO: add convenient way to override default range
 fun KonanTarget.getBoxCacheRange(valueType: ValueType): Pair<Int, Int> = when (this) {
-    else -> defalutCacheRange[valueType]!!
+    else -> defaultCacheRange[valueType]!!
 }
