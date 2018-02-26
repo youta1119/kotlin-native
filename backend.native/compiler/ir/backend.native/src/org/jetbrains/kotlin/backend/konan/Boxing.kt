@@ -55,41 +55,40 @@ internal fun KonanSymbols.getUnboxFunction(valueType: ValueType): IrSimpleFuncti
                 ?: this.boxClasses[valueType]!!.getPropertyGetter("value")!! as IrSimpleFunctionSymbol
 
 
-// Static boxing implementation
 /**
- * Represents static array of boxes
+ * Represents static array of boxes.
  */
-internal enum class BoxCache(
-        val valueType: ValueType,
-        val getIntrinsic: String,
-        val checkIntrinsic: String
-) {
-    BYTE(ValueType.BYTE, "konan.internal.getCachedByteBox", "konan.internal.inByteBoxCache"),
-    SHORT(ValueType.SHORT, "konan.internal.getCachedShortBox", "konan.internal.inShortBoxCache"),
-    CHAR(ValueType.CHAR, "konan.internal.getCachedCharBox", "konan.internal.inCharBoxCache"),
-    INT(ValueType.INT, "konan.internal.getCachedIntBox", "konan.internal.inIntBoxCache"),
-    LONG(ValueType.LONG, "konan.internal.getCachedLongBox", "konan.internal.inLongBoxCache");
 
-    val cacheName = "${valueType.name}Boxes"
+internal enum class BoxCache(val valueType: ValueType) {
+    BYTE(ValueType.BYTE),
+    SHORT(ValueType.SHORT),
+    CHAR(ValueType.CHAR),
+    INT(ValueType.INT),
+    LONG(ValueType.LONG);
 
-    val rangeStartName = "${valueType.name}RangeStart"
-    val rangeEndName = "${valueType.name}RangeEnd"
+    private val valueTypeName = valueType.name.toLowerCase().capitalize()
+    private val getIntrinsic = "konan.internal.getCached${valueTypeName}Box"
+    private val checkIntrinsic = "konan.internal.in${valueTypeName}BoxCache"
+
+    val cacheName = "${valueTypeName}Boxes"
+    val rangeStartName = "${valueTypeName}RangeStart"
+    val rangeEndName = "${valueTypeName}RangeEnd"
 
     companion object {
         /**
-         * returns cache corresponding to the given getIntrinsic name
+         * returns cache corresponding to the given getIntrinsic name.
          */
         fun getCacheByBoxGetter(getBoxMethodName: String): BoxCache? =
             BoxCache.values().firstOrNull { it.getIntrinsic == getBoxMethodName }
 
         /**
-         * returns cache corresponding to the given checkIntrinsic name
+         * returns cache corresponding to the given checkIntrinsic name.
          */
         fun getCacheByInRangeChecker(checkRangeMethodName: String): BoxCache? =
             BoxCache.values().firstOrNull { it.checkIntrinsic == checkRangeMethodName }
 
         /**
-         * Initialize globals
+         * Initialize globals.
          */
         fun initialize(context: Context) {
             values().forEach {
@@ -101,8 +100,8 @@ internal enum class BoxCache(
 }
 
 /**
- * Adds global that refers to the cache
- * If output target is native binary then the cache is created
+ * Adds global that refers to the cache.
+ * If output target is native binary then the cache is created.
  */
 private fun BoxCache.initCache(context: Context): LLVMValueRef {
     return if (context.config.produce.isNativeBinary) {
@@ -113,13 +112,17 @@ private fun BoxCache.initCache(context: Context): LLVMValueRef {
 }
 
 /**
- * Creates globals that defines the smallest and the biggest cached values
+ * Creates globals that defines the smallest and the biggest cached values.
  */
 private fun BoxCache.initRange(context: Context) {
     if (context.config.produce.isNativeBinary) {
         val (start, end) = getRange(context)
+        // Constancy of these globals allows LLVM's constant propagation and DCE
+        // to remove fast path of boxing function in case of empty range.
         context.llvm.staticData.placeGlobal(rangeStartName, createConstant(start), true)
+                .setConstant(true)
         context.llvm.staticData.placeGlobal(rangeEndName, createConstant(end), true)
+                .setConstant(true)
     } else {
         context.llvm.staticData.addGlobal(rangeStartName, valueType.llvmType, false)
         context.llvm.staticData.addGlobal(rangeEndName, valueType.llvmType, false)
@@ -133,7 +136,7 @@ private fun BoxCache.llvmRange(context: Context): Pair<LLVMValueRef, LLVMValueRe
 }
 
 /**
- * Checks that box for the given [value] is in the cache
+ * Checks that box for the given [value] is in the cache.
  */
 internal fun BoxCache.inRange(codegen: FunctionGenerationContext, value: LLVMValueRef): LLVMValueRef {
     val (startPtr, endPtr) = llvmRange(codegen.context)
@@ -150,7 +153,7 @@ private fun BoxCache.getRange(context: Context) =
 internal fun BoxCache.getCachedValue(codegen: FunctionGenerationContext, value: LLVMValueRef): LLVMValueRef {
     val startPtr = llvmRange(codegen.context).first
     val start = codegen.load(startPtr)
-    // we should subtract range start to get index of the box
+    // We should subtract range start to get index of the box.
     val index = LLVMBuildSub(codegen.builder, value, start, "index")!!
     val cache = LLVMGetNamedGlobal(codegen.context.llvmModule, cacheName)!!
     val elemPtr = codegen.gep(cache, index)
@@ -179,15 +182,20 @@ private fun BoxCache.getLlvmType(context: Context) =
 
 private val ValueType.llvmType
     get() = when (this) {
-        ValueType.BYTE -> LLVMInt8Type()!!
-        ValueType.CHAR -> LLVMInt16Type()!!
+        ValueType.BYTE  -> LLVMInt8Type()!!
+        ValueType.CHAR  -> LLVMInt16Type()!!
         ValueType.SHORT -> LLVMInt16Type()!!
-        ValueType.INT -> LLVMInt32Type()!!
-        ValueType.LONG -> LLVMInt64Type()!!
+        ValueType.INT   -> LLVMInt32Type()!!
+        ValueType.LONG  -> LLVMInt64Type()!!
         else            -> error("Cannot box value of type $this")
     }
 
-private val defaultCacheRange = mapOf(
+// When start is greater than end then `inRange` check is always false
+// and can be eliminated by LLVM.
+private val emptyRange = 1 to 0
+
+// Memory usage is around 20kb.
+private val defaultCacheRanges = mapOf(
         ValueType.BYTE  to (-128 to 127),
         ValueType.SHORT to (-128 to 127),
         ValueType.CHAR  to (0 to 255),
@@ -195,15 +203,8 @@ private val defaultCacheRange = mapOf(
         ValueType.LONG  to (-128 to 127)
 )
 
-private val emptyCacheRange = mapOf(
-    ValueType.BYTE  to (0 to 0),
-    ValueType.SHORT to (0 to 0),
-    ValueType.CHAR  to (0 to 0),
-    ValueType.INT   to (0 to 0),
-    ValueType.LONG  to (0 to 0)
-)
-
 fun KonanTarget.getBoxCacheRange(valueType: ValueType): Pair<Int, Int> = when (this) {
-    is KonanTarget.ZEPHYR -> emptyCacheRange[valueType]!!
-    else -> defaultCacheRange[valueType]!!
+    // Just an example.
+    is KonanTarget.ZEPHYR   -> emptyRange
+    else                    -> defaultCacheRanges[valueType]!!
 }
