@@ -108,7 +108,7 @@ private fun BoxCache.initCache(context: Context): LLVMValueRef {
     return if (context.config.produce.isNativeBinary) {
         context.llvm.staticData.createBoxes(this)
     } else {
-        context.llvm.staticData.addGlobal(cacheName, context.llvm.runtime.objHeaderType, false)
+        context.llvm.staticData.addGlobal(cacheName, getLlvmType(context), false)
     }
 }
 
@@ -121,8 +121,8 @@ private fun BoxCache.initRange(context: Context) {
         context.llvm.staticData.placeGlobal(rangeStartName, createConstant(start), true)
         context.llvm.staticData.placeGlobal(rangeEndName, createConstant(end), true)
     } else {
-        context.llvm.staticData.addGlobal(rangeStartName, llvmType, false)
-        context.llvm.staticData.addGlobal(rangeEndName, llvmType, false)
+        context.llvm.staticData.addGlobal(rangeStartName, valueType.llvmType, false)
+        context.llvm.staticData.addGlobal(rangeEndName, valueType.llvmType, false)
     }
 }
 
@@ -144,22 +144,24 @@ internal fun BoxCache.inRange(codegen: FunctionGenerationContext, value: LLVMVal
     return codegen.and(startCheck, endCheck)
 }
 
-private fun BoxCache.getRange(context: Context) = context.config.target.getBoxCacheRange(valueType)
+private fun BoxCache.getRange(context: Context) =
+        context.config.target.getBoxCacheRange(valueType)
 
 internal fun BoxCache.getCachedValue(codegen: FunctionGenerationContext, value: LLVMValueRef): LLVMValueRef {
     val startPtr = llvmRange(codegen.context).first
     val start = codegen.load(startPtr)
     // we should subtract range start to get index of the box
-    val index = LLVMBuildSub(codegen.builder, value, start, "offset")!!
+    val index = LLVMBuildSub(codegen.builder, value, start, "index")!!
     val cache = LLVMGetNamedGlobal(codegen.context.llvmModule, cacheName)!!
-    return codegen.gep(cache, index)
+    val elemPtr = codegen.gep(cache, index)
+    return codegen.bitcast(codegen.kObjHeaderPtr, elemPtr)
 }
 
 private fun StaticData.createBoxes(box: BoxCache): LLVMValueRef {
     val kotlinType = context.ir.symbols.boxClasses[box.valueType]!!.descriptor.defaultType
     val (start, end) = box.getRange(context)
-    val values = (start..end).map { createKotlinObjectInplace(kotlinType, box.createConstant(it)) }
-    return placeGlobalConstArray(box.cacheName, context.llvm.runtime.objHeaderType, values, true).llvm
+    val values = (start..end).map { createInitializer(kotlinType, box.createConstant(it)) }
+    return placeGlobalConstArray(box.cacheName, box.getLlvmType(context), values, true).llvm
 }
 
 private fun BoxCache.createConstant(value: Int) =
@@ -172,25 +174,36 @@ private fun BoxCache.createConstant(value: Int) =
         else            -> error("Cannot box value of type $valueType")
     })
 
-private val BoxCache.llvmType
-    get() = when (valueType) {
+private fun BoxCache.getLlvmType(context: Context) =
+        structType(context.llvm.runtime.objHeaderType, valueType.llvmType)
+
+private val ValueType.llvmType
+    get() = when (this) {
         ValueType.BYTE -> LLVMInt8Type()!!
         ValueType.CHAR -> LLVMInt16Type()!!
         ValueType.SHORT -> LLVMInt16Type()!!
         ValueType.INT -> LLVMInt32Type()!!
         ValueType.LONG -> LLVMInt64Type()!!
-        else            -> error("Cannot box value of type $valueType")
+        else            -> error("Cannot box value of type $this")
     }
 
 private val defaultCacheRange = mapOf(
-        ValueType.BYTE  to (-128 to 128),
+        ValueType.BYTE  to (-128 to 127),
         ValueType.SHORT to (-128 to 127),
         ValueType.CHAR  to (0 to 255),
         ValueType.INT   to (-128 to 127),
         ValueType.LONG  to (-128 to 127)
 )
 
-// TODO: add convenient way to override default range
+private val emptyCacheRange = mapOf(
+    ValueType.BYTE  to (0 to 0),
+    ValueType.SHORT to (0 to 0),
+    ValueType.CHAR  to (0 to 0),
+    ValueType.INT   to (0 to 0),
+    ValueType.LONG  to (0 to 0)
+)
+
 fun KonanTarget.getBoxCacheRange(valueType: ValueType): Pair<Int, Int> = when (this) {
+    is KonanTarget.ZEPHYR -> emptyCacheRange[valueType]!!
     else -> defaultCacheRange[valueType]!!
 }
