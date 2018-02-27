@@ -154,7 +154,15 @@ internal fun BoxCache.getCachedValue(codegen: FunctionGenerationContext, value: 
     val startPtr = llvmRange(codegen.context).first
     val start = codegen.load(startPtr)
     // We should subtract range start to get index of the box.
-    val index = LLVMBuildSub(codegen.builder, value, start, "index")!!
+    val index = if (this == BoxCache.BYTE) {
+        // ByteBox range start has type of i8 and it can't handle values
+        // that are greater than 127. So we need to cast them to i32.
+        val startAsInt = codegen.sext(start, LLVMInt32Type()!!)
+        val valueAsInt = codegen.sext(value, LLVMInt32Type()!!)
+        LLVMBuildSub(codegen.builder, valueAsInt, startAsInt, "index")!!
+    } else {
+        LLVMBuildSub(codegen.builder, value, start, "index")!!
+    }
     val cache = LLVMGetNamedGlobal(codegen.context.llvmModule, cacheName)!!
     val elemPtr = codegen.gep(cache, index)
     return codegen.bitcast(codegen.kObjHeaderPtr, elemPtr)
