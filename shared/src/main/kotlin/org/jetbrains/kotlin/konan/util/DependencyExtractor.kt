@@ -33,6 +33,7 @@ class DependencyExtractor {
         val tarProcess = ProcessBuilder().apply {
             command("tar", "-xzf", tarGz.canonicalPath)
             directory(targetDirectory)
+            inheritIO()
         }.start()
         tarProcess.waitFor()
         if (tarProcess.exitValue() != 0) {
