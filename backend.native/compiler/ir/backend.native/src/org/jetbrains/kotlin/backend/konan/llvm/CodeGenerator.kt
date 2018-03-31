@@ -21,14 +21,9 @@ import kotlinx.cinterop.*
 import llvm.*
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
-import org.jetbrains.kotlin.backend.konan.descriptors.isUnit
 import org.jetbrains.kotlin.backend.konan.descriptors.stdlibModule
-import org.jetbrains.kotlin.backend.konan.isObjCClass
-import org.jetbrains.kotlin.descriptors.ClassConstructorDescriptor
-import org.jetbrains.kotlin.konan.target.KonanTarget
-import org.jetbrains.kotlin.descriptors.ClassDescriptor
-import org.jetbrains.kotlin.descriptors.ClassKind
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
+import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 
 internal class CodeGenerator(override val context: Context) : ContextUtils {
 
@@ -51,7 +46,7 @@ internal class CodeGenerator(override val context: Context) : ContextUtils {
     fun functionEntryPointAddress(descriptor: FunctionDescriptor) = descriptor.entryPointAddress.llvm
     fun functionHash(descriptor: FunctionDescriptor): LLVMValueRef = descriptor.functionName.localHash.llvm
 
-    fun getObjectInstanceStorage(descriptor: ClassDescriptor): LLVMValueRef {
+    fun getObjectInstanceStorage(descriptor: ClassDescriptor, shared: Boolean): LLVMValueRef {
         assert (!descriptor.isUnit())
         val llvmGlobal = if (!isExternal(descriptor)) {
             context.llvmDeclarations.forSingleton(descriptor).instanceFieldRef
@@ -59,6 +54,27 @@ internal class CodeGenerator(override val context: Context) : ContextUtils {
             val llvmType = getLLVMType(descriptor.defaultType)
             importGlobal(
                     descriptor.objectInstanceFieldSymbolName,
+                    llvmType,
+                    origin = descriptor.llvmSymbolOrigin,
+                    threadLocal = !shared
+            )
+        }
+        if (shared)
+            context.llvm.sharedObjects += llvmGlobal
+        else
+            context.llvm.objects += llvmGlobal
+        return llvmGlobal
+    }
+
+    fun getObjectInstanceShadowStorage(descriptor: ClassDescriptor): LLVMValueRef {
+        assert (!descriptor.isUnit())
+        assert (descriptor.symbol.objectIsShared)
+        val llvmGlobal = if (!isExternal(descriptor)) {
+            context.llvmDeclarations.forSingleton(descriptor).instanceShadowFieldRef!!
+        } else {
+            val llvmType = getLLVMType(descriptor.defaultType)
+            importGlobal(
+                    descriptor.objectInstanceShadowFieldSymbolName,
                     llvmType,
                     origin = descriptor.llvmSymbolOrigin,
                     threadLocal = true
@@ -70,7 +86,7 @@ internal class CodeGenerator(override val context: Context) : ContextUtils {
 
     fun typeInfoForAllocation(constructedClass: ClassDescriptor): LLVMValueRef {
         val descriptorForTypeInfo = if (constructedClass.isObjCClass()) {
-            context.interopBuiltIns.objCPointerHolder
+            context.ir.symbols.objCPointerHolder.owner
         } else {
             constructedClass
         }
@@ -455,6 +471,7 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
     fun icmpLt(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntSLT, arg0, arg1, name)!!
     fun icmpLe(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntSLE, arg0, arg1, name)!!
     fun icmpNe(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntNE, arg0, arg1, name)!!
+    fun icmpUGt(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildICmp(builder, LLVMIntPredicate.LLVMIntUGT, arg0, arg1, name)!!
 
     /* floating-point comparisons */
     fun fcmpEq(arg0: LLVMValueRef, arg1: LLVMValueRef, name: String = ""): LLVMValueRef = LLVMBuildFCmp(builder, LLVMRealPredicate.LLVMRealOEQ, arg0, arg1, name)!!
@@ -485,6 +502,49 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
         return LLVMBuildLandingPad(builder, landingpadType, personalityFunction, numClauses, name)!!
     }
 
+    fun kotlinExceptionHandler(
+            block: FunctionGenerationContext.(exception: LLVMValueRef) -> Unit
+    ): ExceptionHandler {
+        val lpBlock = basicBlock("kotlinExceptionHandler", null)
+
+        appendingTo(lpBlock) {
+            val exception = catchKotlinException()
+            block(exception)
+        }
+
+        return object : ExceptionHandler.Local() {
+            override val unwind: LLVMBasicBlockRef get() = lpBlock
+        }
+    }
+
+    fun catchKotlinException(): LLVMValueRef {
+        val landingpadResult = gxxLandingpad(numClauses = 1, name = "lp")
+
+        LLVMAddClause(landingpadResult, LLVMConstNull(kInt8Ptr))
+
+        // FIXME: properly handle C++ exceptions: currently C++ exception can be thrown out from try-finally
+        // bypassing the finally block.
+
+        val exceptionRecord = extractValue(landingpadResult, 0, "er")
+
+        // __cxa_begin_catch returns pointer to C++ exception object.
+        val beginCatch = context.llvm.cxaBeginCatchFunction
+        val exceptionRawPtr = call(beginCatch, listOf(exceptionRecord))
+
+        // Pointer to KotlinException instance:
+        val exceptionPtrPtr = bitcast(codegen.kObjHeaderPtrPtr, exceptionRawPtr, "")
+
+        // Pointer to Kotlin exception object:
+        // We do need a slot here, as otherwise exception instance could be freed by _cxa_end_catch.
+        val exceptionPtr = loadSlot(exceptionPtrPtr, true, "exception")
+
+        // __cxa_end_catch performs some C++ cleanup, including calling `KotlinException` class destructor.
+        val endCatch = context.llvm.cxaEndCatchFunction
+        call(endCatch, listOf())
+
+        return exceptionPtr
+    }
+
     inline fun ifThenElse(
             condition: LLVMValueRef,
             thenValue: LLVMValueRef,
@@ -510,6 +570,20 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
 
         positionAtEnd(bbExit)
         return resultPhi
+    }
+
+    inline fun ifThen(condition: LLVMValueRef, thenBlock: () -> Unit) {
+        val bbExit = basicBlock(locationInfo = position())
+        val bbThen = basicBlock(locationInfo = position())
+
+        condBr(condition, bbThen, bbExit)
+
+        appendingTo(bbThen) {
+            thenBlock()
+            if (!isAfterTerminator()) br(bbExit)
+        }
+
+        positionAtEnd(bbExit)
     }
 
     internal fun debugLocation(locationInfo: LocationInfo): DILocationRef? {
@@ -542,14 +616,16 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
         val typeInfoPtr: LLVMValueRef = if (owner.isObjCClass()) {
             call(context.llvm.getObjCKotlinTypeInfo, listOf(receiver))
         } else {
-            val typeInfoPtrPtr = LLVMBuildStructGEP(builder, receiver, 0 /* type_info */, "")!!
+            val typeInfoOrMetaPtr = structGep(receiver, 0  /* typeInfoOrMeta_ */)
+            val typeInfoOrMeta = load(typeInfoOrMetaPtr)
+            val typeInfoPtrPtr = structGep(typeInfoOrMeta, 0 /* typeInfo */)
             load(typeInfoPtrPtr)
         }
 
         assert (typeInfoPtr.type == codegen.kTypeInfoPtr) { LLVMPrintTypeToString(typeInfoPtr.type)!!.toKString() }
         val llvmMethod = if (!owner.isInterface) {
             // If this is a virtual method of the class - we can call via vtable.
-            val index = context.getVtableBuilder(owner).vtableIndex(descriptor)
+            val index = context.getVtableBuilder(owner).vtableIndex(descriptor as SimpleFunctionDescriptor)
 
             val vtablePlace = gep(typeInfoPtr, Int32(1).llvm) // typeInfoPtr + 1
             val vtable = bitcast(kInt8PtrPtr, vtablePlace)
@@ -571,6 +647,7 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
 
     fun getObjectValue(
             descriptor: ClassDescriptor,
+            shared: Boolean,
             exceptionHandler: ExceptionHandler,
             locationInfo: LocationInfo?
     ): LLVMValueRef {
@@ -578,27 +655,32 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
             return codegen.theUnitInstanceRef.llvm
         }
 
-        val objectPtr = codegen.getObjectInstanceStorage(descriptor)
+        val objectPtr = codegen.getObjectInstanceStorage(descriptor, shared)
         val bbCurrent = currentBlock
-        val bbInit    = basicBlock("label_init", locationInfo)
-        val bbExit    = basicBlock("label_continue", locationInfo)
+        val bbInit= basicBlock("label_init", locationInfo)
+        val bbExit= basicBlock("label_continue", locationInfo)
         val objectVal = loadSlot(objectPtr, false)
-        val condition = icmpNe(objectVal, codegen.kNullObjHeaderPtr)
-        condBr(condition, bbExit, bbInit)
+        val objectInitialized= icmpUGt(ptrToInt(objectVal, codegen.intPtrType), codegen.immOneIntPtrType)
+        condBr(objectInitialized, bbExit, bbInit)
 
         positionAtEnd(bbInit)
         val typeInfo = codegen.typeInfoForAllocation(descriptor)
-        val initFunction = descriptor.constructors.first { it.valueParameters.size == 0 }
-        val ctor = codegen.llvmFunction(initFunction)
-        val args = listOf(objectPtr, typeInfo, ctor)
-        val newValue = call(context.llvm.initInstanceFunction, args, Lifetime.GLOBAL, exceptionHandler)
+        val defaultConstructor = descriptor.constructors.first { it.valueParameters.size == 0 }
+        val ctor = codegen.llvmFunction(defaultConstructor)
+        val (initFunction, args) =
+                if (shared) {
+                    val shadowObjectPtr = codegen.getObjectInstanceShadowStorage(descriptor)
+                    context.llvm.initSharedInstanceFunction to listOf(objectPtr, shadowObjectPtr, typeInfo, ctor)
+                } else {
+                    context.llvm.initInstanceFunction to listOf(objectPtr, typeInfo, ctor)
+                }
+        val newValue = call(initFunction, args, Lifetime.GLOBAL, exceptionHandler)
         val bbInitResult = currentBlock
         br(bbExit)
 
         positionAtEnd(bbExit)
         val valuePhi = phi(codegen.getLLVMType(descriptor.defaultType))
-        addPhiIncoming(valuePhi,
-                bbCurrent to objectVal, bbInitResult to newValue)
+        addPhiIncoming(valuePhi, bbCurrent to objectVal, bbInitResult to newValue)
 
         return valuePhi
     }
@@ -606,22 +688,20 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
     /**
      * Note: the same code is generated as IR in [org.jetbrains.kotlin.backend.konan.lower.EnumUsageLowering].
      */
-    fun getEnumEntry(descriptor: ClassDescriptor, exceptionHandler: ExceptionHandler): LLVMValueRef {
-        assert(descriptor.kind == ClassKind.ENUM_ENTRY)
-
+    fun getEnumEntry(descriptor: IrEnumEntry, exceptionHandler: ExceptionHandler): LLVMValueRef {
         val enumClassDescriptor = descriptor.containingDeclaration as ClassDescriptor
-        val loweredEnum = context.specialDeclarationsFactory.getLoweredEnum(enumClassDescriptor)
+        val loweredEnum = context.specialDeclarationsFactory.getLoweredEnum(enumClassDescriptor.descriptor)
 
         val ordinal = loweredEnum.entriesMap[descriptor.name]!!
         val values = call(
-                loweredEnum.valuesGetter.descriptor.original.llvmFunction,
+                loweredEnum.valuesGetter.llvmFunction,
                 emptyList(),
                 Lifetime.ARGUMENT,
                 exceptionHandler
         )
 
         return call(
-                loweredEnum.itemGetterDescriptor.original.llvmFunction,
+                loweredEnum.itemGetterSymbol.owner.llvmFunction,
                 listOf(values, Int32(ordinal).llvm),
                 Lifetime.GLOBAL,
                 exceptionHandler

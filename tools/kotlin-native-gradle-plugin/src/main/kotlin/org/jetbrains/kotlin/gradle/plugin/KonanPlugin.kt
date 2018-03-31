@@ -238,18 +238,19 @@ open class KonanExtension {
     var targets = mutableListOf("host")
     var languageVersion: String? = null
     var apiVersion: String? = null
-    val jvmArgs = mutableListOf<String>()
+    var jvmArgs = mutableListOf<String>()
 }
 
 class KonanPlugin @Inject constructor(private val registry: ToolingModelBuilderRegistry)
     : Plugin<ProjectInternal> {
 
     enum class ProjectProperty(val propertyName: String) {
-        KONAN_HOME          ("konan.home"),
-        KONAN_VERSION       ("konan.version"),
-        KONAN_BUILD_TARGETS ("konan.build.targets"),
-        KONAN_JVM_ARGS      ("konan.jvmArgs"),
-        DOWNLOAD_COMPILER   ("download.compiler")
+        KONAN_HOME                     ("konan.home"),
+        KONAN_VERSION                  ("konan.version"),
+        KONAN_BUILD_TARGETS            ("konan.build.targets"),
+        KONAN_JVM_ARGS                 ("konan.jvmArgs"),
+        KONAN_USE_ENVIRONMENT_VARIABLES("konan.useEnvironmentVariables"),
+        DOWNLOAD_COMPILER              ("download.compiler")
     }
 
     companion object {

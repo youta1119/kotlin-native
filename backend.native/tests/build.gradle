@@ -66,7 +66,9 @@ externalTestsDir.mkdirs()
 
 ext.platformManager = project.rootProject.platformManager
 ext.target = platformManager.targetManager(project.testTarget).target
-project.convention.plugins.remoteExec = new org.jetbrains.kotlin.ExecRemote(project)
+
+// Add executor to run tests depending on a target
+project.convention.plugins.executor = ExecutorServiceKt.create(project)
 
 allprojects {
     // Root directories for test output (logs, compiled files, statistics etc). Only single path must be in each set.
@@ -195,11 +197,7 @@ def createTestTasks(File testRoot, Class<Task> taskType, Closure taskConfigurati
 
 task run_external () {
     // Create tasks for external tests.
-    for (testDir in ["codegen", "compileKotlinAgainstKotlin"]) {
-        createTestTasks(new File(externalTestsDir, testDir), RunExternalTestGroup) {
-            it.goldValue = "OK"
-        }
-    }
+    createTestTasks(externalTestsDir, RunExternalTestGroup) { }
 
     // Set up dependencies.
     dependsOn(clean)
@@ -614,6 +612,27 @@ task worker8(type: RunKonanTest) {
     source = "runtime/workers/worker8.kt"
 }
 
+task freeze0(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // No workers on WASM.
+    goldValue = "frozen bit is true\n" +
+            "Worker: SharedData(string=Hello, int=10, member=SharedDataMember(double=0.1))\n" +
+            "Main: SharedData(string=Hello, int=10, member=SharedDataMember(double=0.1))\n" +
+            "OK\n"
+    source = "runtime/workers/freeze0.kt"
+}
+
+task freeze1(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // No exceptions on WASM.
+    goldValue = "OK, cannot mutate frozen\n"
+    source = "runtime/workers/freeze1.kt"
+}
+
+task freeze_stress(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32') // No exceptions on WASM.
+    goldValue = "OK\n"
+    source = "runtime/workers/freeze_stress.kt"
+}
+
 task superFunCall(type: RunKonanTest) {
     goldValue = "<fun:C><fun:C1>\n<fun:C><fun:C3>\n"
     source = "codegen/basics/superFunCall.kt"
@@ -688,6 +707,16 @@ task enum_varargParam(type: RunKonanTest) {
 task enum_nested(type: RunKonanTest) {
     goldValue = "A\nC\n"
     source = "codegen/enum/nested.kt"
+}
+
+task enum_isFrozen(type: RunKonanTest) {
+    goldValue = "true\n"
+    source = "codegen/enum/isFrozen.kt"
+}
+
+task enum_loop(type: RunKonanTest) {
+    goldValue = "Z\nZ\n"
+    source = "codegen/enum/loop.kt"
 }
 
 task mangling(type: LinkKonanTest) {
@@ -1080,6 +1109,11 @@ task lateinit_globalIsInitialized(type: RunKonanTest) {
     source = "codegen/lateinit/globalIsInitialized.kt"
 }
 
+task lateinit_innerIsInitialized(type: RunKonanTest) {
+    goldValue = "OK\n"
+    source = "codegen/lateinit/innerIsInitialized.kt"
+}
+
 task kclass0(type: RunKonanTest) {
     source = "codegen/kclass/kclass0.kt"
 }
@@ -1244,6 +1278,20 @@ task array3(type: RunKonanTest) {
     goldValue = "1 2 3 7 8 9 -128 -1 \n1 2 3 7 8 9 -128 -1 \n"
     source = "runtime/collections/array3.kt"
 }
+
+task typed_array0(type: RunKonanTest) {
+    // MIPS target is big-endian.
+    disabled = (project.testTarget == 'linux_mips32')
+    goldValue = "OK\n"
+    source = "runtime/collections/typed_array0.kt"
+}
+
+task typed_array1(type: RunKonanTest) {
+    disabled = (project.testTarget == 'wasm32')  // No exceptions on WASM.
+    goldValue = "OK\n"
+    source = "runtime/collections/typed_array1.kt"
+}
+
 
 task sort0(type: RunKonanTest) {
     goldValue = "[a, b, x]\n[-1, 0, 42, 239, 100500]\n"
@@ -1503,6 +1551,11 @@ task boxing14(type: RunKonanTest) {
 task boxing15(type: RunKonanTest) {
     goldValue = "17\n"
     source = "codegen/boxing/boxing15.kt"
+}
+
+task boxCache0(type: RunKonanTest) {
+    goldValue = "2\n256\n256\n256\n256\n256\n"
+    source = "codegen/boxing/box_cache0.kt"
 }
 
 task interface0(type: RunKonanTest) {
@@ -1927,6 +1980,11 @@ task lambda13(type: RunKonanTest) {
     source = "codegen/lambda/lambda13.kt"
 }
 
+task lambda14(type: RunStandaloneKonanTest) {
+    source = "codegen/lambda/lambda14.kt"
+    flags = ['-tr']
+}
+
 task objectExpression1(type: RunKonanTest) {
     goldValue = "aabb\n"
     source = "codegen/objectExpression/expr1.kt"
@@ -2028,6 +2086,11 @@ task mpp2(type: LinkKonanTest) {
     source = "codegen/mpp/mpp2.kt"
     lib = "codegen/mpp/libmpp2.kt"
     flags = ['-Xmulti-platform']
+}
+
+task mpp_default_args(type: RunStandaloneKonanTest) {
+    source = "codegen/mpp/mpp_default_args.kt"
+    flags = ['-tr', '-Xmulti-platform']
 }
 
 task unit1(type: RunKonanTest) {
@@ -2216,6 +2279,16 @@ task inline_lambdaInDefaultValue(type: RunKonanTest) {
 task inline_lambdaAsAny(type: RunKonanTest) {
     goldValue = "Ok\n"
     source = "codegen/inline/lambdaAsAny.kt"
+}
+
+task inline_getClass(type: RunKonanTest) {
+    goldValue = "OK\n"
+    source = "codegen/inline/getClass.kt"
+}
+
+task inline_statementAsLastExprInBlock(type: RunKonanTest) {
+    goldValue = "OK\n"
+    source = "codegen/inline/statementAsLastExprInBlock.kt"
 }
 
 task deserialized_inline0(type: RunKonanTest) {
@@ -2488,7 +2561,8 @@ if (isMac()) {
         if (!useCustomDist) {
             dependsOn ':distPlatformLibs'
         }
-        disabled = (project.testTarget == 'wasm32') // No interop for wasm yet.
+        disabled = (project.testTarget == 'wasm32') ||    // No interop for wasm yet.
+                (project.testTarget == 'ios_x64')         // No GLUT in iOS
         run = false
         source = "interop/basics/opengl_teapot.kt"
     }
@@ -2529,6 +2603,12 @@ task jsinterop_math(type: RunStandaloneKonanTest) {
     goldValue = "e = 2.718281828459045, pi = 3.141592653589793, sin(pi) = 1.2246467991473532E-16, sin(pi/2) = 1.0, ln(1) = 0.0, ln(e) = 1.0\n"
     source = "jsinterop/math.kt"
     flags = ["-r", "$buildDir", "-l", "jsmath"]
+}
+
+task interop_libiconv(type: RunStandaloneKonanTest) {
+    disabled = (isWindows() || (project.testTarget != null))
+    source = "interop/libiconv.kt"
+    goldValue = "72 72\n101 101\n108 108\n108 108\n111 111\n33 33\n"
 }
 
 task produce_dynamic(type: DynamicKonanTest) {

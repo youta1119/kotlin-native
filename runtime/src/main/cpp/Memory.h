@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
+ * Copyright 2010-2018 JetBrains s.r.o.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@
 #include "Common.h"
 #include "TypeInfo.h"
 
-// Must fit in two bits.
 typedef enum {
   // Those bit masks are applied to refCount_ field.
   // Container is normal thread local container.
@@ -43,20 +42,21 @@ typedef enum {
 
   // Those bit masks are applied to objectCount_ field.
   // Shift to get actual object count.
-  CONTAINER_TAG_GC_SHIFT = 4,
+  CONTAINER_TAG_GC_SHIFT = 5,
   CONTAINER_TAG_GC_INCREMENT = 1 << CONTAINER_TAG_GC_SHIFT,
-  // Color of a container.
-  CONTAINER_TAG_GC_COLOR_MASK = ((CONTAINER_TAG_GC_INCREMENT >> 2) - 1),
+  // Color mask of a container.
+  CONTAINER_TAG_GC_COLOR_MASK = (1 << 2) - 1,
   // Colors.
   CONTAINER_TAG_GC_BLACK  = 0,
   CONTAINER_TAG_GC_GRAY   = 1,
   CONTAINER_TAG_GC_WHITE  = 2,
   CONTAINER_TAG_GC_PURPLE = 3,
-  CONTAINER_TAG_GC_MARKED = 4,
-  CONTAINER_TAG_GC_BUFFERED = 8
+  // Individual state bits used during GC and freezing.
+  CONTAINER_TAG_GC_MARKED = 1 << 2,
+  CONTAINER_TAG_GC_BUFFERED = 1 << 3,
+  CONTAINER_TAG_GC_SEEN = 1 << 4
 } ContainerTag;
 
-typedef uint32_t container_offset_t;
 typedef uint32_t container_size_t;
 
 // Header of all container objects. Contains reference counter.
@@ -71,17 +71,51 @@ struct ContainerHeader {
     return (refCount_ & CONTAINER_TAG_MASK) == CONTAINER_TAG_PERMANENT;
   }
 
+  inline bool frozen() const {
+    return (refCount_ & CONTAINER_TAG_MASK) == CONTAINER_TAG_FROZEN;
+  }
+
+  inline void freeze() {
+    refCount_ = (refCount_ & ~CONTAINER_TAG_MASK) | CONTAINER_TAG_FROZEN;
+  }
+
+  inline bool permanentOrFrozen() const {
+    return tag() == CONTAINER_TAG_PERMANENT || tag() == CONTAINER_TAG_FROZEN;
+  }
+
+  inline bool stack() const {
+    return (refCount_ & CONTAINER_TAG_MASK) == CONTAINER_TAG_STACK;
+  }
+
   inline unsigned refCount() const {
     return refCount_ >> CONTAINER_TAG_SHIFT;
   }
 
-  inline void incRefCount() {
-    refCount_ += CONTAINER_TAG_INCREMENT;
+  inline void setRefCount(unsigned refCount) {
+    refCount_ = tag() | (refCount << CONTAINER_TAG_SHIFT);
   }
 
+  template <bool Atomic>
+  inline void incRefCount() {
+#ifdef KONAN_NO_THREADS
+    refCount_ += CONTAINER_TAG_INCREMENT;
+#else
+    if (Atomic)
+      __sync_add_and_fetch(&refCount_, CONTAINER_TAG_INCREMENT);
+    else
+      refCount_ += CONTAINER_TAG_INCREMENT;
+#endif
+  }
+
+  template <bool Atomic>
   inline int decRefCount() {
-    refCount_ -= CONTAINER_TAG_INCREMENT;
-    return refCount_ >> CONTAINER_TAG_SHIFT;
+#ifdef KONAN_NO_THREADS
+    int value = refCount_ -= CONTAINER_TAG_INCREMENT;
+#else
+    int value = Atomic ?
+       __sync_sub_and_fetch(&refCount_, CONTAINER_TAG_INCREMENT) : refCount_ -= CONTAINER_TAG_INCREMENT;
+#endif
+    return value >> CONTAINER_TAG_SHIFT;
   }
 
   inline unsigned tag() const {
@@ -131,39 +165,45 @@ struct ContainerHeader {
   inline void unMark() {
     objectCount_ &= ~CONTAINER_TAG_GC_MARKED;
   }
+
+  inline bool seen() const {
+    return (objectCount_ & CONTAINER_TAG_GC_SEEN) != 0;
+  }
+
+  inline void setSeen() {
+    objectCount_ |= CONTAINER_TAG_GC_SEEN;
+  }
+
+  inline void resetSeen() {
+    objectCount_ &= ~CONTAINER_TAG_GC_SEEN;
+  }
 };
 
 struct ArrayHeader;
+struct MetaObjHeader;
 
 // Header of every object.
 struct ObjHeader {
-  const TypeInfo* type_info_;
-  container_offset_t container_offset_negative_;
+  TypeInfo* typeInfoOrMeta_;
+  ContainerHeader* container_;
 
   const TypeInfo* type_info() const {
-    // TODO: for moving collectors use meta-objects approach:
-    //  - store tag in lower bit TypeInfo, which marks if meta-object is in place
-    //  - when reading type_info_ check if it is unaligned
-    //  - if it is, pointer points to the MetaObject
-    //  - otherwise this is direct pointer to TypeInfo
-    // Meta-object allows storing additional data associated with some objects,
-    // such as stable hash code.
-    return type_info_;
+    return typeInfoOrMeta_->typeInfo_;
   }
 
-  void set_type_info(const TypeInfo* type_info) {
-    type_info_ = type_info;
+  bool has_meta_object() const {
+    return typeInfoOrMeta_ != typeInfoOrMeta_->typeInfo_;
+  }
+
+  MetaObjHeader* meta_object() {
+     return has_meta_object() ?
+        reinterpret_cast<MetaObjHeader*>(typeInfoOrMeta_) : createMetaObject(&typeInfoOrMeta_);
   }
 
   static ContainerHeader theStaticObjectsContainer;
 
   ContainerHeader* container() const {
-    if (container_offset_negative_ == 0) {
-      return &theStaticObjectsContainer;
-    } else {
-      return reinterpret_cast<ContainerHeader*>(
-          reinterpret_cast<uintptr_t>(this) - container_offset_negative_);
-    }
+    return container_ == nullptr ? &theStaticObjectsContainer : container_;
   }
 
   // Unsafe cast to ArrayHeader. Use carefully!
@@ -173,31 +213,22 @@ struct ObjHeader {
   inline bool permanent() const {
     return container()->permanent();
   }
+
+  static MetaObjHeader* createMetaObject(TypeInfo** location);
+  static void destroyMetaObject(TypeInfo** location);
 };
 
 // Header of value type array objects. Keep layout in sync with that of object header.
 struct ArrayHeader {
-  const TypeInfo* type_info_;
-  container_offset_t container_offset_negative_;
+  TypeInfo* typeInfoOrMeta_;
+  ContainerHeader* container_;
 
   const TypeInfo* type_info() const {
-    // TODO: for moving collectors use meta-objects approach:
-    //  - store tag in lower bit TypeInfo, which marks if meta-object is in place
-    //  - when reading type_info_ check if it is unaligned
-    //  - if it is, pointer points to the MetaObject
-    //  - otherwise this is direct pointer to TypeInfo
-    // Meta-object allows storing additional data associated with some objects,
-    // such as stable hash code.
-    return type_info_;
-  }
-
-  void set_type_info(const TypeInfo* type_info) {
-    type_info_ = type_info;
+    return typeInfoOrMeta_->typeInfo_;
   }
 
   ContainerHeader* container() const {
-    return reinterpret_cast<ContainerHeader*>(
-        reinterpret_cast<uintptr_t>(this) - container_offset_negative_);
+    return container_;
   }
 
   ObjHeader* obj() { return reinterpret_cast<ObjHeader*>(this); }
@@ -205,6 +236,12 @@ struct ArrayHeader {
 
   // Elements count. Element size is stored in instanceSize_ field of TypeInfo, negated.
   uint32_t count_;
+};
+
+// Header for the meta-object.
+struct MetaObjHeader {
+  // Pointer to the type info. Must be first, to match ArrayHeader and ObjHeader layout.
+  const TypeInfo* typeInfo_;
 };
 
 inline uint32_t ArrayDataSizeBytes(const ArrayHeader* obj) {
@@ -218,11 +255,9 @@ class Container {
   // Data where everything is being stored.
   ContainerHeader* header_;
 
-  void SetMeta(ObjHeader* obj, const TypeInfo* type_info) {
-    obj->container_offset_negative_ =
-        reinterpret_cast<uintptr_t>(obj) - reinterpret_cast<uintptr_t>(header_);
-    obj->set_type_info(type_info);
-    RuntimeAssert(obj->container() == header_, "Placement must match");
+  void SetHeader(ObjHeader* obj, const TypeInfo* type_info) {
+    obj->container_ = header_;
+    obj->typeInfoOrMeta_ = const_cast<TypeInfo*>(type_info);
   }
 };
 
@@ -297,11 +332,9 @@ class ArenaContainer {
 
   bool allocContainer(container_size_t minSize);
 
-  void setMeta(ObjHeader* obj, const TypeInfo* typeInfo) {
-    obj->container_offset_negative_ =
-        reinterpret_cast<uintptr_t>(obj) - reinterpret_cast<uintptr_t>(currentChunk_->asHeader());
-    obj->set_type_info(typeInfo);
-    RuntimeAssert(obj->container() == currentChunk_->asHeader(), "Placement must match");
+  void setHeader(ObjHeader* obj, const TypeInfo* typeInfo) {
+    obj->container_ = currentChunk_->asHeader();
+    obj->typeInfoOrMeta_ = const_cast<TypeInfo*>(typeInfo);
   }
 
   ContainerChunk* currentChunk_;
@@ -413,7 +446,10 @@ void DisposeStablePointer(void* pointer) RUNTIME_NOTHROW;
 OBJ_GETTER(DerefStablePointer, void*) RUNTIME_NOTHROW;
 // Move stable pointer ownership.
 OBJ_GETTER(AdoptStablePointer, void*) RUNTIME_NOTHROW;
-
+// Check mutability state.
+void MutationCheck(ObjHeader* obj);
+// Freeze object subgraph.
+void FreezeSubgraph(ObjHeader* root);
 #ifdef __cplusplus
 }
 #endif

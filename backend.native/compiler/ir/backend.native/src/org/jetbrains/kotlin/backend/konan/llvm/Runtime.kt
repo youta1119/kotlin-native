@@ -30,7 +30,8 @@ class Runtime(bitcodeFile: String) {
     val llvmModule: LLVMModuleRef = parseBitcodeFile(bitcodeFile)
 
     internal fun getStructTypeOrNull(name: String) = LLVMGetTypeByName(llvmModule, "struct.$name")
-    internal fun getStructType(name: String) = getStructTypeOrNull(name)!!
+    internal fun getStructType(name: String) = getStructTypeOrNull(name)
+            ?: throw Error("struct.$name is not found in the Runtime module.")
 
     val typeInfoType = getStructType("TypeInfo")
     val writableTypeInfoType = getStructTypeOrNull("WritableTypeInfo")
@@ -41,6 +42,7 @@ class Runtime(bitcodeFile: String) {
     val objHeaderType = getStructType("ObjHeader")
     val objHeaderPtrType = pointerType(objHeaderType)
     val arrayHeaderType = getStructType("ArrayHeader")
+    val containerHeaderType = getStructType("ContainerHeader")
 
     val frameOverlayType = getStructType("FrameOverlay")
 
@@ -56,7 +58,6 @@ class Runtime(bitcodeFile: String) {
     val objCToKotlinMethodAdapter by lazy { getStructType("ObjCToKotlinMethodAdapter") }
     val kotlinToObjCMethodAdapter by lazy { getStructType("KotlinToObjCMethodAdapter") }
     val typeInfoObjCExportAddition by lazy { getStructType("TypeInfoObjCExportAddition") }
-
 
     val pointerSize: Int by lazy {
         LLVMABISizeOfType(targetData, objHeaderPtrType).toInt()

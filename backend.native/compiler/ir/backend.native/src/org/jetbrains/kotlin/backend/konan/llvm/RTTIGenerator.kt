@@ -19,15 +19,12 @@ package org.jetbrains.kotlin.backend.konan.llvm
 import llvm.*
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.*
-import org.jetbrains.kotlin.backend.konan.isExternalObjCClassMethod
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
-import org.jetbrains.kotlin.descriptors.*
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
+import org.jetbrains.kotlin.descriptors.Modality
+import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.name.FqName
-import org.jetbrains.kotlin.resolve.DescriptorUtils
 import org.jetbrains.kotlin.resolve.constants.StringValue
-import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
-import org.jetbrains.kotlin.resolve.descriptorUtil.getSuperClassOrAny
-import org.jetbrains.kotlin.resolve.descriptorUtil.parentsWithSelf
 
 
 internal class RTTIGenerator(override val context: Context) : ContextUtils {
@@ -38,21 +35,27 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     inner class MethodTableRecord(val nameSignature: LocalHash, val methodEntryPoint: ConstPointer?) :
             Struct(runtime.methodTableRecordType, nameSignature, methodEntryPoint)
 
-    private inner class TypeInfo(val name: ConstValue, val size: Int,
-                                 val superType: ConstValue,
-                                 val objOffsets: ConstValue,
-                                 val objOffsetsCount: Int,
-                                 val interfaces: ConstValue,
-                                 val interfacesCount: Int,
-                                 val methods: ConstValue,
-                                 val methodsCount: Int,
-                                 val fields: ConstValue,
-                                 val fieldsCount: Int,
-                                 val packageName: String?,
-                                 val relativeName: String?,
-                                 val writableTypeInfo: ConstPointer?) :
+    private inner class TypeInfo(
+            selfPtr: ConstPointer,
+            name: ConstValue,
+            size: Int,
+            superType: ConstValue,
+            objOffsets: ConstValue,
+            objOffsetsCount: Int,
+            interfaces: ConstValue,
+            interfacesCount: Int,
+            methods: ConstValue,
+            methodsCount: Int,
+            fields: ConstValue,
+            fieldsCount: Int,
+            packageName: String?,
+            relativeName: String?,
+            writableTypeInfo: ConstPointer?) :
+
             Struct(
                     runtime.typeInfoType,
+
+                    selfPtr,
 
                     name,
                     Int32(size),
@@ -125,8 +128,8 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val size = getInstanceSize(bodyType, className)
 
-        val superTypeOrAny = classDesc.getSuperClassOrAny()
-        val superType = if (KotlinBuiltIns.isAny(classDesc)) NullPointer(runtime.typeInfoType)
+        val superTypeOrAny = classDesc.getSuperClassNotAny() ?: context.ir.symbols.any.owner
+        val superType = if (classDesc.isAny()) NullPointer(runtime.typeInfoType)
                 else superTypeOrAny.typeInfoPtr
 
         val interfaces = classDesc.implementedInterfaces.map { it.typeInfoPtr }
@@ -165,8 +168,11 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 runtime.methodTableRecordType, methods)
 
         val reflectionInfo = getReflectionInfo(classDesc)
-
-        val typeInfo = TypeInfo(name, size,
+        val typeInfoGlobal = llvmDeclarations.typeInfoGlobal
+        val typeInfo = TypeInfo(
+                classDesc.typeInfoPtr,
+                name,
+                size,
                 superType,
                 objOffsetsPtr, objOffsets.size,
                 interfacesPtr, interfaces.size,
@@ -176,8 +182,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 reflectionInfo.relativeName,
                 llvmDeclarations.writableTypeInfoGlobal?.pointer
         )
-
-        val typeInfoGlobal = llvmDeclarations.typeInfoGlobal
 
         val typeInfoGlobalValue = if (!classDesc.typeInfoHasVtableAttached) {
             typeInfo
@@ -236,14 +240,14 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val size = 0
 
-        val superClass = context.builtIns.any
+        val superClass = context.ir.symbols.any.owner
 
         assert(superClass.implementedInterfaces.isEmpty())
         val interfaces = listOf(descriptor.typeInfoPtr)
         val interfacesPtr = staticData.placeGlobalConstArray("",
                 pointerType(runtime.typeInfoType), interfaces)
 
-        assert(superClass.getMemberScope().getVariableNames().isEmpty())
+        assert(superClass.declarations.all { it !is IrProperty && it !is IrField })
         val objOffsetsPtr = NullPointer(int32Type)
         val objOffsetsCount = 0
         val fieldsPtr = NullPointer(runtime.fieldTableRecordType)
@@ -268,8 +272,12 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                     .also { it.setZeroInitializer() }
                     .pointer
         }
-
-        val typeInfo = TypeInfo(
+        val vtable = vtable(superClass)
+        val typeInfoWithVtableType = structType(runtime.typeInfoType, vtable.llvmType)
+        val typeInfoWithVtableGlobal = staticData.createGlobal(typeInfoWithVtableType, "", isExported = false)
+        val result = typeInfoWithVtableGlobal.pointer.getElementPtr(0)
+        val typeInfoWithVtable = Struct(TypeInfo(
+                selfPtr = result,
                 name = name,
                 size = size,
                 superType = superClass.typeInfoPtr,
@@ -280,12 +288,12 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 packageName = reflectionInfo.packageName,
                 relativeName = reflectionInfo.relativeName,
                 writableTypeInfo = writableTypeInfo
-        )
+              ), vtable)
 
-        val vtable = vtable(superClass)
+        typeInfoWithVtableGlobal.setInitializer(typeInfoWithVtable)
+        typeInfoWithVtableGlobal.setConstant(true)
 
-        return staticData.placeGlobal("", Struct(typeInfo, vtable))
-                .pointer.getElementPtr(0)
+        return result
     }
 
     private val OverriddenFunctionDescriptor.implementation get() = getImplementation(context)
@@ -295,18 +303,18 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     private fun getReflectionInfo(descriptor: ClassDescriptor): ReflectionInfo {
         // Use data from value class in type info for box class:
         val descriptorForReflection = context.ir.symbols.valueClassToBox.entries
-                .firstOrNull { it.value.descriptor == descriptor }
-                ?.key ?: descriptor
+                .firstOrNull { it.value.owner == descriptor }
+                ?.key?.owner ?: descriptor
 
-        return if (DescriptorUtils.isAnonymousObject(descriptorForReflection)) {
+        return if (descriptorForReflection.isAnonymousObject) {
             ReflectionInfo(packageName = null, relativeName = null)
-        } else if (DescriptorUtils.isLocal(descriptorForReflection)) {
+        } else if (descriptorForReflection.isLocal) {
             ReflectionInfo(packageName = null, relativeName = descriptorForReflection.name.asString())
         } else {
             ReflectionInfo(
                     packageName = descriptorForReflection.findPackage().fqName.asString(),
-                    relativeName = descriptorForReflection.parentsWithSelf
-                            .takeWhile { it is ClassDescriptor }.toList().reversed()
+                    relativeName = generateSequence(descriptorForReflection, { it.parent as? ClassDescriptor })
+                            .toList().reversed()
                             .joinToString(".") { it.name.asString() }
             )
         }

@@ -22,22 +22,19 @@ import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.CurrentKonanModule
 import org.jetbrains.kotlin.backend.konan.descriptors.DeserializedKonanModule
 import org.jetbrains.kotlin.backend.konan.descriptors.LlvmSymbolOrigin
+import org.jetbrains.kotlin.backend.konan.descriptors.findPackage
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.backend.konan.hash.GlobalHash
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
 import org.jetbrains.kotlin.backend.konan.isNativeBinary
 import org.jetbrains.kotlin.backend.konan.library.KonanLibraryReader
 import org.jetbrains.kotlin.backend.konan.library.impl.LibraryReaderImpl
 import org.jetbrains.kotlin.backend.konan.library.withResolvedDependencies
-import org.jetbrains.kotlin.descriptors.ClassDescriptor
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
-import org.jetbrains.kotlin.descriptors.impl.TypeAliasConstructorDescriptor
+import org.jetbrains.kotlin.ir.declarations.IrExternalPackageFragment
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.resolve.descriptorUtil.module
-import org.jetbrains.kotlin.types.KotlinType
-import org.jetbrains.kotlin.types.TypeUtils
 import kotlin.properties.ReadOnlyProperty
 import kotlin.reflect.KProperty
 
@@ -162,7 +159,14 @@ internal interface ContextUtils : RuntimeAware {
     val staticData: StaticData
         get() = context.llvm.staticData
 
-    fun isExternal(descriptor: DeclarationDescriptor) = descriptor.module != context.ir.irModule.descriptor
+    fun isExternal(descriptor: DeclarationDescriptor): Boolean {
+        val pkg = descriptor.findPackage()
+        return when (pkg) {
+            is IrFile -> false
+            is IrExternalPackageFragment -> true
+            else -> error(pkg)
+        }
+    }
 
     /**
      * LLVM function generated from the Kotlin function.
@@ -170,10 +174,7 @@ internal interface ContextUtils : RuntimeAware {
      */
     val FunctionDescriptor.llvmFunction: LLVMValueRef
         get() {
-            assert (this.kind.isReal)
-            if (this is TypeAliasConstructorDescriptor) {
-                return this.underlyingConstructorDescriptor.llvmFunction
-            }
+            assert (this.isReal)
 
             return if (isExternal(this)) {
                 context.llvm.externalFunction(this.symbolName, getLlvmFunctionType(this),
@@ -208,12 +209,6 @@ internal interface ContextUtils : RuntimeAware {
      */
     val ClassDescriptor.llvmTypeInfoPtr: LLVMValueRef
         get() = typeInfoPtr.llvm
-
-    /**
-     * Pointer to type info for this type, or `null` if the type doesn't have corresponding type info.
-     */
-    val KotlinType.typeInfoPtr: ConstPointer?
-        get() = TypeUtils.getClassDescriptor(this)?.typeInfoPtr
 
     /**
      * Returns contents of this [GlobalHash].
@@ -400,11 +395,10 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
 
     private fun importRtFunction(name: String) = importFunction(name, runtime.llvmModule)
 
-    var globalInitIndex:Int = 0
-
     val allocInstanceFunction = importRtFunction("AllocInstance")
     val allocArrayFunction = importRtFunction("AllocArrayInstance")
     val initInstanceFunction = importRtFunction("InitInstance")
+    val initSharedInstanceFunction = importRtFunction("InitSharedInstance")
     val updateReturnRefFunction = importRtFunction("UpdateReturnRef")
     val updateRefFunction = importRtFunction("UpdateRef")
     val enterFrameFunction = importRtFunction("EnterFrame")
@@ -417,6 +411,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val throwExceptionFunction = importRtFunction("ThrowException")
     val appendToInitalizersTail = importRtFunction("AppendToInitializersTail")
     val initRuntimeIfNeeded = importRtFunction("Kotlin_initRuntimeIfNeeded")
+    val mutationCheck = importRtFunction("MutationCheck")
 
     val createKotlinObjCClass by lazy { importRtFunction("CreateKotlinObjCClass") }
     val getObjCKotlinTypeInfo by lazy { importRtFunction("GetObjCKotlinTypeInfo") }
@@ -433,6 +428,8 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val Kotlin_ObjCExport_convertUnit by lazyRtFunction
     val Kotlin_ObjCExport_GetAssociatedObject by lazyRtFunction
     val Kotlin_ObjCExport_AbstractMethodCalled by lazyRtFunction
+    val Kotlin_ObjCExport_RethrowExceptionAsNSError by lazyRtFunction
+    val Kotlin_ObjCExport_RethrowNSErrorAsException by lazyRtFunction
 
     val kObjectReservedTailSize = if (context.config.produce.isNativeBinary) {
         // Note: this defines the global declared in runtime (if any).
@@ -454,7 +451,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     }
 
     private val personalityFunctionName = when (target) {
-        KonanTarget.MINGW -> "__gxx_personality_seh0"
+        KonanTarget.MINGW_X64 -> "__gxx_personality_seh0"
         else -> "__gxx_personality_v0"
     }
 
@@ -482,6 +479,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val staticInitializers = mutableListOf<LLVMValueRef>()
     val fileInitializers = mutableListOf<IrField>()
     val objects = mutableSetOf<LLVMValueRef>()
+    val sharedObjects = mutableSetOf<LLVMValueRef>()
 
     private object lazyRtFunction {
         operator fun provideDelegate(

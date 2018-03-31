@@ -1,3 +1,19 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.jetbrains.kotlin.gradle.plugin.test
 
 import java.nio.file.Files
@@ -228,22 +244,22 @@ class MultiplatformSpecification extends BaseKonanSpecification {
         result.output.contains("dependency is not a project: ")
     }
 
-    def 'Build should fail if several common projects are added'() {
-        when:
+    def 'Build should support several expectedBy-dependencies'() {
+        expect:
         def project = KonanProject.createEmpty(projectDirectory) { KonanProject it ->
-            def commonDirectory = createCommonProject(it)
+            def commonDirectory = createCommonProject(it, "commonFoo")
             createCommonSource(commonDirectory,
                     ["src", "main", "kotlin"],
                     "common.kt",
-                    "fun foo(): Int = 0")
+                    "expect fun foo(): Int")
 
-            commonDirectory = createCommonProject(it, "common2")
+            commonDirectory = createCommonProject(it, "commonBar")
             createCommonSource(commonDirectory,
                     ["src", "main", "kotlin"],
                     "common.kt",
-                    "fun bar(): Int = 0")
+                    "expect fun bar(): Int")
 
-            it.generateSrcFile("platform.kt", "fun baz() = 0")
+            it.generateSrcFile("platform.kt", "actual fun foo() = 0\nactual fun bar() = 0")
             it.buildFile.append("""
                 konanArtifacts {
                     library('foo') {
@@ -252,15 +268,12 @@ class MultiplatformSpecification extends BaseKonanSpecification {
                 }
 
                 dependencies {
-                    expectedBy project(':common')
-                    expectedBy project(':common2')
+                    expectedBy project(':commonFoo')
+                    expectedBy project(':commonBar')
                 }
                 """.stripIndent())
         }
-        def result = project.createRunner().withArguments(":build").buildAndFail()
-
-        then:
-        result.output.contains("has more than one 'expectedBy' dependency")
+        project.createRunner().withArguments(":build").build()
     }
 
     def 'Build should fail if the common project has no common plugin'() {

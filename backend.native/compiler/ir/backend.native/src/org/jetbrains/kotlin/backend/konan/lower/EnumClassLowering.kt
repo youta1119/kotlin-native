@@ -19,32 +19,36 @@ package org.jetbrains.kotlin.backend.konan.lower
 import org.jetbrains.kotlin.backend.common.ClassLoweringPass
 import org.jetbrains.kotlin.backend.common.FileLoweringPass
 import org.jetbrains.kotlin.backend.common.deepCopyWithVariables
-import org.jetbrains.kotlin.backend.common.lower.SimpleMemberScope
 import org.jetbrains.kotlin.backend.common.runOnFilePostfix
 import org.jetbrains.kotlin.backend.jvm.descriptors.createValueParameter
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.DECLARATION_ORIGIN_ENUM
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
-import org.jetbrains.kotlin.backend.common.ir.createFakeOverrideDescriptor
 import org.jetbrains.kotlin.backend.common.ir.addSimpleDelegatingConstructor
 import org.jetbrains.kotlin.backend.common.ir.createArrayOfExpression
 import org.jetbrains.kotlin.backend.common.ir.createSimpleDelegatingConstructorDescriptor
+import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
+import org.jetbrains.kotlin.backend.common.lower.irBlockBody
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.impl.ClassConstructorDescriptorImpl
 import org.jetbrains.kotlin.descriptors.impl.ClassDescriptorImpl
 import org.jetbrains.kotlin.ir.IrStatement
+import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.*
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrConstructorSymbol
+import org.jetbrains.kotlin.ir.symbols.impl.IrAnonymousInitializerSymbolImpl
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
+import org.jetbrains.kotlin.resolve.scopes.MemberScope
 import org.jetbrains.kotlin.types.TypeProjectionImpl
 import org.jetbrains.kotlin.types.TypeSubstitutor
+import org.jetbrains.kotlin.types.Variance
 
 internal class EnumSyntheticFunctionsBuilder(val context: Context) {
     fun buildValuesExpression(startOffset: Int, endOffset: Int,
@@ -187,7 +191,7 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             val defaultClass = createDefaultClassForEnumEntries()
             lowerEnumClassBody()
             if (defaultClass != null)
-                irClass.declarations.add(defaultClass)
+                irClass.addChild(defaultClass)
             createImplObject()
         }
 
@@ -275,15 +279,11 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                 }
             }
 
-            val contributedDescriptors = irClass.descriptor.unsubstitutedMemberScope
-                    .getContributedDescriptors()
-                    .map { it.createFakeOverrideDescriptor(defaultClassDescriptor) }
-                    .filterNotNull()
-                    .toList()
-            defaultClassDescriptor.initialize(SimpleMemberScope(contributedDescriptors), constructors, null)
+            val memberScope = stub<MemberScope>("enum default class")
+            defaultClassDescriptor.initialize(memberScope, constructors, null)
 
             defaultClass.createParameterDeclarations()
-            defaultClass.addFakeOverrides()
+            defaultClass.setSuperSymbolsAndAddFakeOverrides(listOf(irClass))
 
             return defaultClass
         }
@@ -325,10 +325,10 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                     constructorOfAny, implObject.descriptor.constructors.single(),
                     DECLARATION_ORIGIN_ENUM)
 
-            implObject.declarations.add(createSyntheticValuesPropertyDeclaration(enumEntries))
-            implObject.declarations.add(createValuesPropertyInitializer(enumEntries))
+            implObject.addChild(createSyntheticValuesPropertyDeclaration(enumEntries))
+            implObject.addChild(createValuesPropertyInitializer(enumEntries))
 
-            irClass.declarations.add(implObject)
+            irClass.addChild(implObject)
         }
 
         private val genericCreateUninitializedInstanceSymbol = context.ir.symbols.createUninitializedInstance
@@ -363,36 +363,43 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             getter.body = IrBlockBodyImpl(startOffset, endOffset, listOf(returnStatement))
 
             return IrPropertyImpl(startOffset, endOffset, DECLARATION_ORIGIN_ENUM,
-                    false, loweredEnum.valuesField.descriptor, irField, getter, null)
+                    false, loweredEnum.valuesField.descriptor, irField, getter, null).also {
+                it.parent = loweredEnum.implObject
+            }
         }
 
         private val initInstanceSymbol = context.ir.symbols.initInstance
 
         private val arrayGetSymbol = context.ir.symbols.array.functions.single { it.descriptor.name == Name.identifier("get") }
 
+        private val arrayType = context.builtIns.getArrayType(Variance.INVARIANT, irClass.defaultType)
+
         private fun createValuesPropertyInitializer(enumEntries: List<IrEnumEntry>): IrAnonymousInitializerImpl {
             val startOffset = irClass.startOffset
             val endOffset = irClass.endOffset
 
-            val statements = enumEntries
-                    .sortedBy { it.descriptor.name }
-                    .withIndex()
-                    .map {
-                        val instances = IrGetFieldImpl(startOffset, endOffset,
-                                loweredEnum.valuesField.symbol, IrGetValueImpl(startOffset, endOffset, loweredEnum.implObject.thisReceiver!!.symbol))
-                        val instance = IrCallImpl(startOffset, endOffset, arrayGetSymbol).apply {
-                            dispatchReceiver = instances
-                            putValueArgument(0, IrConstImpl(startOffset, endOffset, context.builtIns.intType, IrConstKind.Int, it.index))
-                        }
-                        val initializer = it.value.initializerExpression!! as IrCall
-                        IrCallImpl(startOffset, endOffset, initInstanceSymbol).apply {
-                            putValueArgument(0, instance)
-                            putValueArgument(1, initializer)
-                        }
+            return IrAnonymousInitializerImpl(startOffset, endOffset, DECLARATION_ORIGIN_ENUM, loweredEnum.implObject.descriptor).apply {
+                body = context.createIrBuilder(symbol, startOffset, endOffset).irBlockBody(irClass) {
+                    val instances = irTemporary(irGetField(irGet(loweredEnum.implObject.thisReceiver!!.symbol), loweredEnum.valuesField.symbol))
+                    enumEntries
+                            .sortedBy { it.descriptor.name }
+                            .withIndex()
+                            .forEach {
+                                val instance = irCall(arrayGetSymbol).apply {
+                                    dispatchReceiver = irGet(instances.symbol)
+                                    putValueArgument(0, irInt(it.index))
+                                }
+                                val initializer = it.value.initializerExpression!! as IrCall
+                                +irCall(initInstanceSymbol).apply {
+                                    putValueArgument(0, instance)
+                                    putValueArgument(1, initializer)
+                                }
+                            }
+                    +irCall(this@EnumClassLowering.context.ir.symbols.freeze, listOf(arrayType)).apply {
+                        extensionReceiver = irGet(loweredEnum.implObject.thisReceiver!!.symbol)
                     }
-            return IrAnonymousInitializerImpl(startOffset, endOffset, DECLARATION_ORIGIN_ENUM,
-                    loweredEnum.implObject.descriptor, IrBlockBodyImpl(startOffset, endOffset, statements)
-            )
+                }
+            }
         }
 
         private fun createSyntheticValuesMethodBody(declaration: IrFunction): IrBody {
@@ -432,6 +439,7 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                     loweredConstructorDescriptor,
                     enumConstructor.body!! // will be transformed later
             )
+            loweredEnumConstructor.parent = enumConstructor.parent
 
             loweredEnumConstructors[constructorDescriptor] = loweredEnumConstructor
 

@@ -49,6 +49,8 @@ class KonanBuiltIns(storageManager: StorageManager) : KotlinBuiltIns(storageMana
         val packageName = FqName("konan.internal")
 
         val nativePtr = packageName.child(Name.identifier(nativePtrName)).toUnsafe()
+
+        val throws = FqName("konan.Throws")
     }
 
     private val packageScope by lazy { builtInsModule.getPackage(FqNames.packageName).memberScope }
@@ -80,3 +82,8 @@ object KonanPlatform : TargetPlatform("Konan") {
 
     override val platformConfigurator: PlatformConfigurator = KonanPlatformConfigurator
 }
+
+/**
+ * Maximum number of parameters supported in function types (e.g. `FunctionXX`, `KFunctionXX`, `SuspendFunctionXX`).
+ */
+internal const val KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS = 22

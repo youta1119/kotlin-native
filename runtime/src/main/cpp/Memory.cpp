@@ -19,10 +19,6 @@
 
 #include <cstddef> // for offsetof
 
-#ifndef KONAN_NO_THREADS
-#include <pthread.h>
-#endif
-
 #include "Alloc.h"
 #include "Assert.h"
 #include "Exceptions.h"
@@ -30,7 +26,7 @@
 #include "MemoryPrivate.hpp"
 #include "Natives.h"
 #include "Porting.h"
-
+#include "Atomic.h"
 
 // If garbage collection algorithm for cyclic garbage to be used.
 // We are using the Bacon's algorithm for GC, see
@@ -43,8 +39,10 @@
 // Auto-adjust GC thresholds.
 #define GC_ERGONOMICS 1
 
+// TODO: ensure it is read-only.
 ContainerHeader ObjHeader::theStaticObjectsContainer = {
-  CONTAINER_TAG_PERMANENT | CONTAINER_TAG_INCREMENT
+  CONTAINER_TAG_PERMANENT | CONTAINER_TAG_INCREMENT,
+  0 /* Object count */
 };
 
 namespace {
@@ -59,14 +57,6 @@ constexpr container_size_t kObjectAlignment = 8;
 #else
 #define MEMORY_LOG(...)
 #endif
-
-inline int atomicAdd(int* where, int what) {
-#ifndef KONAN_NO_THREADS
-  return __sync_add_and_fetch(where, what);
-#else
-  return *where += what;
-#endif
-}
 
 #if USE_GC
 // Collection threshold default (collect after having so many elements in the
@@ -265,6 +255,7 @@ struct MemoryState {
   size_t gcThreshold;
   // If collection is in progress.
   bool gcInProgress;
+  int finalizerQueueSuspendCount;
 
 #if GC_ERGONOMICS
   uint64_t lastGcTimestamp;
@@ -370,11 +361,15 @@ THREAD_LOCAL_VARIABLE MemoryState* memoryState = nullptr;
 constexpr int kFrameOverlaySlots = sizeof(FrameOverlay) / sizeof(ObjHeader**);
 
 inline bool isFreeable(const ContainerHeader* header) {
-  return (header->refCount_ & CONTAINER_TAG_MASK) < CONTAINER_TAG_PERMANENT;
+  return header->tag() < CONTAINER_TAG_PERMANENT;
 }
 
 inline bool isArena(const ContainerHeader* header) {
-  return (header->refCount_ & CONTAINER_TAG_MASK) == CONTAINER_TAG_STACK;
+  return header->stack();
+}
+
+inline bool isAggregatingFrozenContainer(const ContainerHeader* header) {
+  return header->frozen() && header->objectCount() > 1;
 }
 
 inline container_size_t alignUp(container_size_t size, int alignment) {
@@ -413,18 +408,25 @@ inline FrameOverlay* asFrameOverlay(ObjHeader** slot) {
 }
 
 inline bool isRefCounted(KConstRef object) {
-  return (object->container()->refCount_ & CONTAINER_TAG_MASK) ==
-      CONTAINER_TAG_NORMAL;
+  return isFreeable(object->container());
 }
 } // namespace
 
 extern "C" {
+
 void objc_release(void* ptr);
 void Kotlin_ObjCExport_releaseReservedObjectTail(ObjHeader* obj);
-}
+RUNTIME_NORETURN void ThrowFreezingException();
+RUNTIME_NORETURN void ThrowInvalidMutabilityException();
+
+}  // extern "C"
 
 inline void runDeallocationHooks(ObjHeader* obj) {
+  if (obj->has_meta_object()) {
+    ObjHeader::destroyMetaObject(&obj->typeInfoOrMeta_);
+  }
 #if KONAN_OBJC_INTEROP
+  // TODO: rewrite using meta-object.
   if (obj->type_info() == theObjCPointerHolderTypeInfo) {
     void* objcPtr =  *reinterpret_cast<void**>(obj + 1); // TODO: use more reliable layout description
     objc_release(objcPtr);
@@ -461,89 +463,6 @@ void DeinitInstanceBody(const TypeInfo* typeInfo, void* body) {
 
 namespace {
 
-#if USE_GC
-inline void processFinalizerQueue(MemoryState* state) {
-  // TODO: reuse elements of finalizer queue for new allocations.
-  while (!state->finalizerQueue->empty()) {
-    auto container = memoryState->finalizerQueue->back();
-    state->finalizerQueue->pop_back();
-    if ((reinterpret_cast<uintptr_t>(container) & 1) != 0) {
-      container = reinterpret_cast<ContainerHeader*>(reinterpret_cast<uintptr_t>(container) & ~1);
-#if TRACE_MEMORY
-      state->containers->erase(container);
-#endif
-      runDeallocationHooks(container);
-    }
-    CONTAINER_DESTROY_EVENT(state, container)
-    konanFreeMemory(container);
-    atomicAdd(&allocCount, -1);
-  }
-}
-#endif
-
-inline void scheduleDestroyContainer(
-    MemoryState* state, ContainerHeader* container) {
-#if USE_GC
-  state->finalizerQueue->push_front(container);
-  // We cannot clean finalizer queue while in GC.
-  if (!state->gcInProgress && state->finalizerQueue->size() > 256) {
-    processFinalizerQueue(state);
-  }
-#else
-  atomicAdd(&allocCount, -1);
-  CONTAINER_DESTROY_EVENT(state, header)
-  konanFreeMemory(header);
-#endif
-}
-
-
-#if !USE_GC
-
-inline void IncrementRC(ContainerHeader* container) {
-  container->incRefCount();
-}
-
-inline void DecrementRC(ContainerHeader* container, bool useCycleCollector) {
-  if (container->decRefCount() == 0) {
-    FreeContainer(container);
-  }
-}
-
-#else // USE_GC
-
-inline uint32_t freeableSize(MemoryState* state) {
-  return state->toFree->size();
-}
-
-inline void IncrementRC(ContainerHeader* container) {
-  container->incRefCount();
-  container->setColor(CONTAINER_TAG_GC_BLACK);
-}
-
-inline void DecrementRC(ContainerHeader* container, bool useCycleCollector) {
-  if (container->decRefCount() == 0) {
-    FreeContainer(container);
-  } else if (useCycleCollector) { // Possible root.
-    if (container->color() != CONTAINER_TAG_GC_PURPLE) {
-      container->setColor(CONTAINER_TAG_GC_PURPLE);
-      if (!container->buffered()) {
-        container->setBuffered();
-        auto state = memoryState;
-        state->toFree->push_back(container);
-        if (state->gcSuspendCount == 0 && freeableSize(state) >= state->gcThreshold) {
-          GarbageCollect();
-        }
-      }
-    }
-  }
-}
-
-inline void initThreshold(MemoryState* state, uint32_t gcThreshold) {
-  state->gcThreshold = gcThreshold;
-  state->toFree->reserve(gcThreshold);
-}
-#endif // USE_GC
-
 template<typename func>
 void traverseContainerObjectFields(ContainerHeader* container, func process) {
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
@@ -573,6 +492,111 @@ void traverseContainerReferredObjects(ContainerHeader* container, func process) 
   });
 }
 
+#if USE_GC
+
+inline bool isMarkedAsRemoved(ContainerHeader* container) {
+  return (reinterpret_cast<uintptr_t>(container) & 1) != 0;
+}
+
+inline ContainerHeader* markAsRemoved(ContainerHeader* container) {
+  return reinterpret_cast<ContainerHeader*>(reinterpret_cast<uintptr_t>(container) | 1);
+}
+
+inline void processFinalizerQueue(MemoryState* state) {
+  // TODO: reuse elements of finalizer queue for new allocations.
+  while (!state->finalizerQueue->empty()) {
+    auto container = memoryState->finalizerQueue->back();
+    state->finalizerQueue->pop_back();
+#if TRACE_MEMORY
+    state->containers->erase(container);
+#endif
+    if (!isAggregatingFrozenContainer(container))
+      runDeallocationHooks(container);
+
+    CONTAINER_DESTROY_EVENT(state, container)
+    konanFreeMemory(container);
+    atomicAdd(&allocCount, -1);
+  }
+}
+#endif
+
+inline void scheduleDestroyContainer(
+    MemoryState* state, ContainerHeader* container, bool clearExternalRefs) {
+  if (clearExternalRefs) {
+    traverseContainerObjectFields(container, [](ObjHeader** location) {
+        ObjHeader* ref = *location;
+        // Frozen object references do not participate in trial deletion, so shall be explicitly freed.
+        if (ref != nullptr && ref->container()->frozen())
+          UpdateRef(location, nullptr);
+      });
+  }
+#if USE_GC
+  state->finalizerQueue->push_front(container);
+  // We cannot clean finalizer queue while in GC.
+  if (!state->gcInProgress && state->finalizerQueueSuspendCount == 0 && state->finalizerQueue->size() > 256) {
+    processFinalizerQueue(state);
+  }
+#else
+  atomicAdd(&allocCount, -1);
+  CONTAINER_DESTROY_EVENT(state, header)
+  konanFreeMemory(header);
+#endif
+}
+
+
+#if !USE_GC
+
+template <bool Atomic>
+inline void IncrementRC(ContainerHeader* container) {
+  container->incRefCount<Atomic>();
+}
+
+template <bool Atomic>
+inline void DecrementRC(ContainerHeader* container, bool useCycleCollector) {
+  if (container->decRefCount<Atomic>() == 0) {
+    FreeContainer(container);
+  }
+}
+
+#else // USE_GC
+
+inline uint32_t freeableSize(MemoryState* state) {
+  return state->toFree->size();
+}
+
+template <bool Atomic>
+inline void IncrementRC(ContainerHeader* container) {
+  container->incRefCount<Atomic>();
+  container->setColor(CONTAINER_TAG_GC_BLACK);
+}
+
+template <bool Atomic>
+inline void DecrementRC(ContainerHeader* container, bool useCycleCollector) {
+  if (container->decRefCount<Atomic>() == 0) {
+    FreeContainer(container);
+  } else if (!Atomic && useCycleCollector) { // Possible root.
+    // Do not use cycle collector for frozen objects, as we already detected possible cycles during
+    // freezing.
+    if (container->color() != CONTAINER_TAG_GC_PURPLE) {
+      container->setColor(CONTAINER_TAG_GC_PURPLE);
+      if (!container->buffered()) {
+        container->setBuffered();
+        auto state = memoryState;
+        state->toFree->push_back(container);
+        if (state->gcSuspendCount == 0 && freeableSize(state) >= state->gcThreshold) {
+          GarbageCollect();
+        }
+      }
+    }
+  }
+}
+
+inline void initThreshold(MemoryState* state, uint32_t gcThreshold) {
+  state->gcThreshold = gcThreshold;
+  state->toFree->reserve(gcThreshold);
+}
+#endif // USE_GC
+
 #if TRACE_MEMORY || USE_GC
 
 void dumpWorker(const char* prefix, ContainerHeader* header, ContainerHeaderSet* seen) {
@@ -591,7 +615,10 @@ void dumpWorker(const char* prefix, ContainerHeader* header, ContainerHeaderSet*
 void dumpReachable(const char* prefix, const ContainerHeaderSet* roots) {
   ContainerHeaderSet seen;
   for (auto container : *roots) {
-    MEMORY_LOG("%p is root\n", container)
+    MEMORY_LOG("%p: %s%s%s\n", container,
+        container->frozen() ? "frozen " : "",
+        container->permanent() ? "permanent " : "",
+        container->stack() ? "stack " : "")
     dumpWorker(prefix, container, &seen);
   }
 }
@@ -618,8 +645,9 @@ void MarkGray(ContainerHeader* container) {
   traverseContainerReferredObjects(container, [](ObjHeader* ref) {
     auto childContainer = ref->container();
     RuntimeAssert(!isArena(childContainer), "A reference to local object is encountered");
-    if (!childContainer->permanent()) {
-      childContainer->decRefCount();
+
+    if (!childContainer->permanentOrFrozen()) {
+      childContainer->decRefCount<false>();
       MarkGray<useColor>(childContainer);
     }
   });
@@ -637,8 +665,8 @@ void ScanBlack(ContainerHeader* container) {
   traverseContainerReferredObjects(container, [](ObjHeader* ref) {
     auto childContainer = ref->container();
     RuntimeAssert(!isArena(childContainer), "A reference to local object is encountered");
-    if (!childContainer->permanent()) {
-      childContainer->incRefCount();
+    if (!childContainer->permanentOrFrozen()) {
+      childContainer->incRefCount<false>();
       if (useColor) {
         if (childContainer->color() != CONTAINER_TAG_GC_BLACK)
           ScanBlack<useColor>(childContainer);
@@ -662,7 +690,7 @@ void CollectCycles(MemoryState* state) {
 
 void MarkRoots(MemoryState* state) {
   for (auto container : *(state->toFree)) {
-    if ((reinterpret_cast<uintptr_t>(container) & 1) != 0)
+    if (isMarkedAsRemoved(container))
       continue;
     auto color = container->color();
     auto rcIsZero = container->refCount() == 0;
@@ -672,7 +700,7 @@ void MarkRoots(MemoryState* state) {
     } else {
       container->resetBuffered();
       if (color == CONTAINER_TAG_GC_BLACK && rcIsZero) {
-        scheduleDestroyContainer(state, reinterpret_cast<ContainerHeader*>(reinterpret_cast<uintptr_t>(container) | 1));
+        scheduleDestroyContainer(state, container, true);
       }
     }
   }
@@ -701,7 +729,7 @@ void Scan(ContainerHeader* container) {
   traverseContainerReferredObjects(container, [](ObjHeader* ref) {
     auto childContainer = ref->container();
     RuntimeAssert(!isArena(childContainer), "A reference to local object is encountered");
-    if (!childContainer->permanent()) {
+    if (!childContainer->permanentOrFrozen()) {
       Scan(childContainer);
     }
   });
@@ -715,11 +743,11 @@ void CollectWhite(MemoryState* state, ContainerHeader* container) {
   traverseContainerReferredObjects(container, [state](ObjHeader* ref) {
     auto childContainer = ref->container();
     RuntimeAssert(!isArena(childContainer), "A reference to local object is encountered");
-    if (!childContainer->permanent()) {
+    if (!childContainer->permanentOrFrozen()) {
       CollectWhite(state, childContainer);
     }
   });
-  scheduleDestroyContainer(state, reinterpret_cast<ContainerHeader*>(reinterpret_cast<uintptr_t>(container) | 1));
+  scheduleDestroyContainer(state, container, true);
 }
 
 inline void AddRef(ContainerHeader* header) {
@@ -730,7 +758,10 @@ inline void AddRef(ContainerHeader* header) {
     case CONTAINER_TAG_PERMANENT:
       break;
     case CONTAINER_TAG_NORMAL:
-      IncrementRC(header);
+      IncrementRC<false>(header);
+      break;
+    case CONTAINER_TAG_FROZEN:
+      IncrementRC<true>(header);
       break;
     default:
       RuntimeAssert(false, "unknown container type");
@@ -746,7 +777,10 @@ inline void Release(ContainerHeader* header, bool useCycleCollector) {
     case CONTAINER_TAG_STACK:
       break;
     case CONTAINER_TAG_NORMAL:
-      DecrementRC(header, useCycleCollector);
+      DecrementRC<false>(header, useCycleCollector);
+      break;
+    case CONTAINER_TAG_FROZEN:
+      DecrementRC<true>(header, useCycleCollector);
       break;
     default:
       RuntimeAssert(false, "unknown container type");
@@ -783,6 +817,29 @@ inline size_t containerSize(const ContainerHeader* container) {
 
 }  // namespace
 
+MetaObjHeader* ObjHeader::createMetaObject(TypeInfo** location) {
+  MetaObjHeader* meta = konanConstructInstance<MetaObjHeader>();
+  TypeInfo* typeInfo = *location;
+  meta->typeInfo_ = typeInfo;
+#if KONAN_NO_THREADS
+  *location = reinterpret_cast<TypeInfo*>(meta);
+#else
+  TypeInfo* old = __sync_val_compare_and_swap(location, typeInfo, reinterpret_cast<TypeInfo*>(meta));
+  if (old->typeInfo_ != old) {
+    // Someone installed a new meta-object since the check.
+    konanFreeMemory(meta);
+    meta = reinterpret_cast<MetaObjHeader*>(old);
+  }
+#endif
+  return meta;
+}
+
+void ObjHeader::destroyMetaObject(TypeInfo** location) {
+  TypeInfo* meta = *location;
+  *location = nullptr;
+  konanFreeMemory(meta);
+}
+
 ContainerHeader* AllocContainer(size_t size) {
   auto state = memoryState;
 #if USE_GC
@@ -798,11 +855,51 @@ ContainerHeader* AllocContainer(size_t size) {
   return result;
 }
 
+ContainerHeader* AllocAggregatingFrozenContainer(KStdVector<ContainerHeader*>& containers) {
+  auto componentSize = containers.size();
+  auto superContainer = AllocContainer(sizeof(ContainerHeader) + sizeof(void*) * componentSize);
+  auto place = reinterpret_cast<ContainerHeader**>(superContainer + 1);
+  for (auto* container : containers) {
+    *place++ = container;
+    // Set link to the new container.
+    auto obj = reinterpret_cast<ObjHeader*>(container + 1);
+    obj->container_ = superContainer;
+    MEMORY_LOG("Set fictitious frozen container for %p: %p\n", obj, superContainer);
+  }
+  superContainer->setObjectCount(componentSize);
+  superContainer->freeze();
+  return superContainer;
+}
+
+void FreeAggregatingFrozenContainer(ContainerHeader* container) {
+  auto state = memoryState;
+  RuntimeAssert(isAggregatingFrozenContainer(container), "expected fictitious frozen container");
+  MEMORY_LOG("%p is fictitious frozen container\n", container);
+  RuntimeAssert(!container->buffered(), "frozen objects must not participate in GC")
+  // Forbid finalizerQueue handling.
+  ++state->finalizerQueueSuspendCount;
+  // Special container for frozen objects.
+  ContainerHeader** subContainer = reinterpret_cast<ContainerHeader**>(container + 1);
+  MEMORY_LOG("Total subcontainers = %d\n", container->objectCount());
+  for (int i = 0; i < container->objectCount(); ++i) {
+    MEMORY_LOG("Freeing subcontainer %p\n", *subContainer);
+    FreeContainer(*subContainer++);
+  }
+  --state->finalizerQueueSuspendCount;
+  scheduleDestroyContainer(state, container, false);
+  MEMORY_LOG("Freeing subcontainers done\n");
+}
+
 void FreeContainer(ContainerHeader* header) {
   RuntimeAssert(!header->permanent(), "this kind of container shalln't be freed");
   auto state = memoryState;
 
   CONTAINER_FREE_EVENT(state, header)
+
+  if (isAggregatingFrozenContainer(header)) {
+    FreeAggregatingFrozenContainer(header);
+    return;
+  }
 
   // Now let's clean all object's fields in this container.
   traverseContainerObjectFields(header, [](ObjHeader** location) {
@@ -814,36 +911,31 @@ void FreeContainer(ContainerHeader* header) {
     runDeallocationHooks(header);
   } else {
     header->setColor(CONTAINER_TAG_GC_BLACK);
-    if (!header->buffered()) {
-      runDeallocationHooks(header);
-#if TRACE_MEMORY
-    memoryState->containers->erase(header);
-#endif
-      scheduleDestroyContainer(state, header);
-    }
+    if (!header->buffered())
+      scheduleDestroyContainer(state, header, false);
   }
 }
 
-void ObjectContainer::Init(const TypeInfo* type_info) {
-  RuntimeAssert(type_info->instanceSize_ >= 0, "Must be an object");
+void ObjectContainer::Init(const TypeInfo* typeInfo) {
+  RuntimeAssert(typeInfo->instanceSize_ >= 0, "Must be an object");
   uint32_t alloc_size =
-      sizeof(ContainerHeader) + sizeof(ObjHeader) + type_info->instanceSize_ + kObjectReservedTailSize;
+      sizeof(ContainerHeader) + sizeof(ObjHeader) + typeInfo->instanceSize_ + kObjectReservedTailSize;
   header_ = AllocContainer(alloc_size);
   if (header_) {
     // One object in this container.
     header_->setObjectCount(1);
      // header->refCount_ is zero initialized by AllocContainer().
-    SetMeta(GetPlace(), type_info);
+    SetHeader(GetPlace(), typeInfo);
     MEMORY_LOG("object at %p\n", GetPlace())
     OBJECT_ALLOC_EVENT(memoryState, type_info->instanceSize_, GetPlace())
   }
 }
 
-void ArrayContainer::Init(const TypeInfo* type_info, uint32_t elements) {
-  RuntimeAssert(type_info->instanceSize_ < 0, "Must be an array");
+void ArrayContainer::Init(const TypeInfo* typeInfo, uint32_t elements) {
+  RuntimeAssert(typeInfo->instanceSize_ < 0, "Must be an array");
   uint32_t alloc_size =
       sizeof(ContainerHeader) + sizeof(ArrayHeader) -
-      type_info->instanceSize_ * elements + kObjectReservedTailSize;
+      typeInfo->instanceSize_ * elements + kObjectReservedTailSize;
   header_ = AllocContainer(alloc_size);
   RuntimeAssert(header_ != nullptr, "Cannot alloc memory");
   if (header_) {
@@ -851,10 +943,10 @@ void ArrayContainer::Init(const TypeInfo* type_info, uint32_t elements) {
     header_->setObjectCount(1);
     // header->refCount_ is zero initialized by AllocContainer().
     GetPlace()->count_ = elements;
-    SetMeta(GetPlace()->obj(), type_info);
+    SetHeader(GetPlace()->obj(), typeInfo);
     MEMORY_LOG("array at %p\n", GetPlace())
     OBJECT_ALLOC_EVENT(
-        memoryState, -type_info->instanceSize_ * elements, GetPlace()->obj())
+        memoryState, -typeInfo->instanceSize_ * elements, GetPlace()->obj())
   }
 }
 
@@ -933,7 +1025,7 @@ ObjHeader* ArenaContainer::PlaceObject(const TypeInfo* type_info) {
   }
   OBJECT_ALLOC_EVENT(memoryState, type_info->instanceSize_, result)
   currentChunk_->asHeader()->incObjectCount();
-  setMeta(result, type_info);
+  setHeader(result, type_info);
   return result;
 }
 
@@ -946,7 +1038,7 @@ ArrayHeader* ArenaContainer::PlaceArray(const TypeInfo* type_info, uint32_t coun
   }
   OBJECT_ALLOC_EVENT(memoryState, -type_info->instanceSize_ * count, result->obj())
   currentChunk_->asHeader()->incObjectCount();
-  setMeta(result->obj(), type_info);
+  setHeader(result->obj(), type_info);
   result->count_ = count;
   return result;
 }
@@ -974,13 +1066,17 @@ void ReleaseRefFromAssociatedObject(const ObjHeader* object) {
 extern "C" {
 
 MemoryState* InitMemory() {
-  RuntimeAssert(offsetof(ArrayHeader, type_info_)
+  RuntimeAssert(offsetof(ArrayHeader, typeInfoOrMeta_)
                 ==
-                offsetof(ObjHeader,   type_info_),
+                offsetof(ObjHeader,   typeInfoOrMeta_),
                 "Layout mismatch");
-  RuntimeAssert(offsetof(ArrayHeader, container_offset_negative_)
+  RuntimeAssert(offsetof(ArrayHeader, container_)
                 ==
-                offsetof(ObjHeader  , container_offset_negative_),
+                offsetof(ObjHeader  , container_),
+                "Layout mismatch");
+  RuntimeAssert(offsetof(TypeInfo, typeInfo_)
+                ==
+                offsetof(MetaObjHeader, typeInfo_),
                 "Layout mismatch");
   RuntimeAssert(sizeof(FrameOverlay) % sizeof(ObjHeader**) == 0, "Frame overlay should contain only pointers")
   RuntimeAssert(memoryState == nullptr, "memory state must be clear");
@@ -1013,9 +1109,8 @@ void DeinitMemory(MemoryState* memoryState) {
   bool lastMemoryState = atomicAdd(&aliveMemoryStatesCount, -1) == 0;
 
 #if TRACE_MEMORY
-  if (allocCount > 0) {
-    MEMORY_LOG("*** Memory leaks, leaked %d containers ***\n",
-               allocCount);
+  if (lastMemoryState && allocCount > 0) {
+    MEMORY_LOG("*** Memory leaks, leaked %d containers ***\n", allocCount);
     dumpReachable("", memoryState->containers);
   }
 #else
@@ -1079,6 +1174,51 @@ OBJ_GETTER(InitInstance,
 #endif
 }
 
+OBJ_GETTER(InitSharedInstance,
+    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* type_info, void (*ctor)(ObjHeader*)) {
+#if KONAN_NO_THREADS
+  RETURN_RESULT_OF(InitInstance, location, type_info, ctor);
+#else
+  ObjHeader* value = *localLocation;
+  if (value != nullptr) RETURN_OBJ(value);
+
+  ObjHeader* initializing = reinterpret_cast<ObjHeader*>(1);
+
+  // Spin lock.
+  while ((value = __sync_val_compare_and_swap(location, nullptr, initializing)) == initializing);
+  if (value != nullptr) {
+    // OK'ish, inited by someone else.
+    RETURN_OBJ(value);
+  }
+
+  ObjHeader* object = AllocInstance(type_info, OBJ_RESULT);
+  MEMORY_LOG("Calling UpdateRef from InitInstance\n")
+  UpdateRef(localLocation, object);
+#if KONAN_NO_EXCEPTIONS
+  ctor(object);
+  if (!object->container()->frozen())
+    ThrowFreezingException();
+  UpdateRef(location, object);
+  __sync_synchronize();
+  return object;
+#else
+  try {
+    ctor(object);
+    if (!object->container()->frozen())
+      ThrowFreezingException();
+    UpdateRef(location, object);
+    __sync_synchronize();
+    return object;
+  } catch (...) {
+    UpdateRef(OBJ_RESULT, nullptr);
+    UpdateRef(location, nullptr);
+    __sync_synchronize();
+    throw;
+  }
+#endif
+#endif
+}
+
 bool HasReservedObjectTail(ObjHeader* obj) {
   return kObjectReservedTailSize != 0 && !obj->permanent();
 }
@@ -1127,7 +1267,7 @@ void UpdateRef(ObjHeader** location, const ObjHeader* object) {
       AddRef(object);
     }
     *const_cast<const ObjHeader**>(location) = object;
-    if (old > reinterpret_cast<ObjHeader*>(1)) {
+    if (reinterpret_cast<uintptr_t>(old) > 1) {
       ReleaseRef(old);
     }
   }
@@ -1300,7 +1440,7 @@ bool hasExternalRefs(ContainerHeader* container, ContainerHeaderSet* visited) {
   bool result = container->refCount() != 0;
   traverseContainerReferredObjects(container, [&result, visited](ObjHeader* ref) {
     auto child = ref->container();
-    if (!child->permanent() && (visited->find(child) == visited->end())) {
+    if (!child->permanentOrFrozen() && (visited->find(child) == visited->end())) {
       result |= hasExternalRefs(child, visited);
     }
   });
@@ -1314,29 +1454,203 @@ bool ClearSubgraphReferences(ObjHeader* root, bool checked) {
     auto state = memoryState;
     auto container = root->container();
 
+    if (container->frozen())
+      // We assume, that frozen objects can be safely passed and are already removed
+      // GC candidate list.
+      return true;
+
     ContainerHeaderSet visited;
     if (!checked) {
       hasExternalRefs(container, &visited);
     } else {
-      container->decRefCount();
-      MarkGray<false>(container);
-      auto bad = hasExternalRefs(container, &visited);
-      ScanBlack<false>(container);
-      container->incRefCount();
-      if (bad) return false;
+      if (!container->permanentOrFrozen()) {
+        container->decRefCount<false>();
+        MarkGray<false>(container);
+        auto bad = hasExternalRefs(container, &visited);
+        ScanBlack<false>(container);
+        container->incRefCount<false>();
+        if (bad) return false;
+      }
     }
 
+    // TODO: not very effecient traversal.
     for (auto it = state->toFree->begin(); it != state->toFree->end(); ++it) {
       auto container = *it;
       if (visited.find(container) != visited.end()) {
         container->resetBuffered();
         container->setColor(CONTAINER_TAG_GC_BLACK);
-        *it = reinterpret_cast<ContainerHeader*>(reinterpret_cast<uintptr_t>(container) | 1);
+        *it = markAsRemoved(container);
       }
     }
   }
 #endif  // USE_GC
   return true;
+}
+
+/**
+  * Do DFS cycle detection with three colors:
+  *  - 'marked' bit as BLACK marker (object and its descendants processed)
+  *  - 'seen' bit as GRAY marker (object is being processed)
+  *  - not 'marked' and not 'seen' as WHITE marker (object is unprocessed)
+  * When we see GREY during DFS, it means we see cycle.
+  */
+void depthFirstTraversal(ContainerHeader* container, bool* hasCycles, KStdVector<ContainerHeader*>& order) {
+  // Mark GRAY.
+  container->setSeen();
+
+  traverseContainerReferredObjects(container, [hasCycles, &order](ObjHeader* obj) {
+      ContainerHeader* objContainer = obj->container();
+      if (!objContainer->permanentOrFrozen()) {
+        // Marked GREY, there's cycle.
+        if (objContainer->seen()) *hasCycles = true;
+
+        // Go deeper if WHITE.
+        if (!objContainer->seen() && !objContainer->marked()) {
+          depthFirstTraversal(objContainer, hasCycles, order);
+        }
+      }
+  });
+  // Mark BLACK.
+  container->resetSeen();
+  container->mark();
+  order.push_back(container);
+}
+
+void traverseStronglyConnectedComponent(ContainerHeader* container,
+                                        KStdUnorderedMap<ContainerHeader*, KStdVector<ContainerHeader*>> const& reversedEdges,
+                                        KStdVector<ContainerHeader*>& component) {
+  component.push_back(container);
+  container->mark();
+  auto it = reversedEdges.find(container);
+  RuntimeAssert(it != reversedEdges.end(), "unknown node during condensation building");
+  for (auto* nextContainer : it->second) {
+    if (!nextContainer->marked())
+      traverseStronglyConnectedComponent(nextContainer, reversedEdges, component);
+  }
+}
+
+/**
+ * Theory of operations.
+ *
+ * Kotlin/Native supports object graph freezing, allowing to make certain subgraph immutable and thus
+ * suitable for safe sharing amongs multiple concurrent executors. This operation recursively operates
+ * on all objects reachable from the given object, and marks them as frozen. In frozen state object's
+ * fields cannot be modified, and so, lifetime of frozen objects correlates. Practically, it means
+ * that lifetimes of all strongly connected components are fully controlled by incoming reference
+ * counters, and so if we place all members of strongly connected component to the single container
+ * it could be correctly released by just atomic decrement on reference counter, without additional
+ * cycle collector run.
+ * So during subgraph freezing operation, we perform the following steps:
+ *   - run Kosoraju-Sharir algorithm to find strongly connected components
+ *   - put all objects in each strongly connected component into an artificial container
+ *     (we assume that they all were in single element containers initially), single-object
+ *     components remain in the same container
+ *   - artifical container sums up outer reference counters of all its objects (i.e.
+ *     incoming references from the same strongly connected component are not counted)
+ *   - mark all object's headers as frozen
+ *
+ *  Further reference counting on frozen objects is performed with the atomic operations, and so frozen
+ * references could be passed accross multiple threads.
+ */
+void FreezeSubgraph(ObjHeader* root) {
+  // TODO: for now, we just check that passed object graph has no cycles, and throw an exception,
+  // if it does. Next version will run Kosoraju-Sharir if cycles are found.
+  ContainerHeader* rootContainer = root->container();
+  if (rootContainer->permanentOrFrozen()) return;
+
+  // Do DFS cycle detection.
+  bool hasCycles = false;
+  KStdVector<ContainerHeader*> order;
+  depthFirstTraversal(rootContainer, &hasCycles, order);
+
+  KStdUnorderedMap<ContainerHeader*, KStdVector<ContainerHeader*>> reversedEdges;
+  // Now unmark all marked objects, and freeze them, if no cycles detected.
+  KStdDeque<ContainerHeader*> queue;
+  queue.push_back(rootContainer);
+  while (!queue.empty()) {
+    ContainerHeader* current = queue.front();
+    queue.pop_front();
+    current->unMark();
+
+    if (hasCycles) {
+      reversedEdges.emplace(current, KStdVector<ContainerHeader*>(0));
+    } else {
+      current->resetBuffered();
+      current->setColor(CONTAINER_TAG_GC_BLACK);
+      // Note, that once object is frozen, it could be concurrently accessed, so
+      // color and similar attributes shall not be used.
+      current->freeze();
+    }
+    traverseContainerReferredObjects(current, [hasCycles, current, &queue, &reversedEdges](ObjHeader* obj) {
+        ContainerHeader* objContainer = obj->container();
+        if (!objContainer->permanentOrFrozen()) {
+          if (objContainer->marked())
+            queue.push_back(objContainer);
+          if (hasCycles)
+            reversedEdges.emplace(objContainer, KStdVector<ContainerHeader*>(0)).first->second.push_back(current);
+        }
+    });
+  }
+
+  if (hasCycles) {
+    KStdVector<KStdVector<ContainerHeader*>> components;
+    MEMORY_LOG("Condensation:\n");
+    // Enumerate in topological order.
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+      auto* container = *it;
+      if (container->marked()) continue;
+      KStdVector<ContainerHeader*> component;
+      traverseStronglyConnectedComponent(container, reversedEdges, component);
+      MEMORY_LOG("SCC:\n");
+#if TRACE_MEMORY
+      for (auto c : component)
+        konan::consolePrintf("    %p\n", c);
+#endif
+      components.push_back(std::move(component));
+    }
+    // Enumerate strongly connected components in reversed topological order.
+    for (auto it = components.rbegin(); it != components.rend(); ++it) {
+      auto& component = *it;
+      int internalRefsCount = 0;
+      int totalCount = 0;
+      for (auto* container : component) {
+        totalCount += container->refCount();
+        traverseContainerReferredObjects(container, [&internalRefsCount](ObjHeader* obj) {
+            if (!obj->container()->permanentOrFrozen())
+              ++internalRefsCount;
+        });
+      }
+      auto superContainer = component.size() == 1
+                              ? component[0]
+                              : AllocAggregatingFrozenContainer(component); // Create fictitious container for the whole component.
+      // Don't count internal references.
+      superContainer->setRefCount(totalCount - internalRefsCount);
+
+      // Freeze component.
+      for (auto* container : component) {
+        container->resetBuffered();
+        container->setColor(CONTAINER_TAG_GC_BLACK);
+        // Note, that once object is frozen, it could be concurrently accessed, so
+        // color and similar attributes shall not be used.
+        container->freeze();
+      }
+    }
+  }
+
+  // Now remove frozen objects from the toFree list.
+  // TODO: optimize it by keeping ignored (i.e. freshly frozen) objects in the set,
+  // and use it when analyzing toFree during collection.
+  auto state = memoryState;
+  for (auto& container : *(state->toFree)) {
+      if (!isMarkedAsRemoved(container) && container->frozen())
+        container = markAsRemoved(container);
+  }
+}
+
+// This function is called from field mutators to check if object's header is frozen.
+// If object is frozen, an exception is thrown.
+void MutationCheck(ObjHeader* obj) {
+  if (obj->container()->frozen()) ThrowInvalidMutabilityException();
 }
 
 } // extern "C"

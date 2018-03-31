@@ -16,7 +16,31 @@
 
 package konan.internal
 
-// TODO: cache some boxes.
+
+@SymbolName("getCachedBooleanBox")
+external fun getCachedBooleanBox(value: Boolean): BooleanBox
+@SymbolName("inBooleanBoxCache")
+external fun inBooleanBoxCache(value: Boolean): Boolean
+@SymbolName("getCachedByteBox")
+external fun getCachedByteBox(value: Byte): ByteBox
+@SymbolName("inByteBoxCache")
+external fun inByteBoxCache(value: Byte): Boolean
+@SymbolName("getCachedCharBox")
+external fun getCachedCharBox(value: Char): CharBox
+@SymbolName("inCharBoxCache")
+external fun inCharBoxCache(value: Char): Boolean
+@SymbolName("getCachedShortBox")
+external fun getCachedShortBox(value: Short): ShortBox
+@SymbolName("inShortBoxCache")
+external fun inShortBoxCache(value: Short): Boolean
+@SymbolName("getCachedIntBox")
+external fun getCachedIntBox(idx: Int): IntBox
+@SymbolName("inIntBoxCache")
+external fun inIntBoxCache(value: Int): Boolean
+@SymbolName("getCachedLongBox")
+external fun getCachedLongBox(value: Long): LongBox
+@SymbolName("inLongBoxCache")
+external fun inLongBoxCache(value: Long): Boolean
 
 class BooleanBox(val value: Boolean) : Comparable<Boolean> {
     override fun equals(other: Any?): Boolean {
@@ -35,7 +59,11 @@ class BooleanBox(val value: Boolean) : Comparable<Boolean> {
 }
 
 @ExportForCppRuntime("Kotlin_boxBoolean")
-fun boxBoolean(value: Boolean) = BooleanBox(value)
+fun boxBoolean(value: Boolean) = if (inBooleanBoxCache(value)) {
+    getCachedBooleanBox(value)
+} else {
+    BooleanBox(value)
+}
 
 class CharBox(val value: Char) : Comparable<Char> {
     override fun equals(other: Any?): Boolean {
@@ -54,7 +82,11 @@ class CharBox(val value: Char) : Comparable<Char> {
 }
 
 @ExportForCppRuntime("Kotlin_boxChar")
-fun boxChar(value: Char) = CharBox(value)
+fun boxChar(value: Char) = if (inCharBoxCache(value)) {
+    getCachedCharBox(value)
+} else {
+    CharBox(value)
+}
 
 class ByteBox(val value: Byte) : Number(), Comparable<Byte> {
     override fun equals(other: Any?): Boolean {
@@ -81,7 +113,11 @@ class ByteBox(val value: Byte) : Number(), Comparable<Byte> {
 }
 
 @ExportForCppRuntime("Kotlin_boxByte")
-fun boxByte(value: Byte) = ByteBox(value)
+fun boxByte(value: Byte) = if (inByteBoxCache(value)) {
+    getCachedByteBox(value)
+} else {
+    ByteBox(value)
+}
 
 class ShortBox(val value: Short) : Number(), Comparable<Short> {
     override fun equals(other: Any?): Boolean {
@@ -108,7 +144,11 @@ class ShortBox(val value: Short) : Number(), Comparable<Short> {
 }
 
 @ExportForCppRuntime("Kotlin_boxShort")
-fun boxShort(value: Short) = ShortBox(value)
+fun boxShort(value: Short) = if (inShortBoxCache(value)) {
+    getCachedShortBox(value)
+} else {
+    ShortBox(value)
+}
 
 class IntBox(val value: Int) : Number(), Comparable<Int> {
     override fun equals(other: Any?): Boolean {
@@ -135,7 +175,11 @@ class IntBox(val value: Int) : Number(), Comparable<Int> {
 }
 
 @ExportForCppRuntime("Kotlin_boxInt")
-fun boxInt(value: Int) = IntBox(value)
+fun boxInt(value: Int) = if (inIntBoxCache(value)) {
+    getCachedIntBox(value)
+} else {
+    IntBox(value)
+}
 
 class LongBox(val value: Long) : Number(), Comparable<Long> {
     override fun equals(other: Any?): Boolean {
@@ -162,7 +206,11 @@ class LongBox(val value: Long) : Number(), Comparable<Long> {
 }
 
 @ExportForCppRuntime("Kotlin_boxLong")
-fun boxLong(value: Long) = LongBox(value)
+fun boxLong(value: Long) = if (inLongBoxCache(value)) {
+    getCachedLongBox(value)
+} else {
+    LongBox(value)
+}
 
 class FloatBox(val value: Float) : Number(), Comparable<Float> {
     override fun equals(other: Any?): Boolean {

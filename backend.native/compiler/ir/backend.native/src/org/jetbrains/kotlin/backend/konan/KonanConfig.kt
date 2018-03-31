@@ -50,7 +50,7 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     init {
         if (!platformManager.isEnabled(target)) {
-            error("Target $target is not available on the ${HostManager.host} host")
+            error("Target ${target.visibleName} is not available on the ${HostManager.hostName} host")
         }
     }
 
@@ -62,6 +62,7 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     internal val clang = platform.clang
     val indirectBranchesAreAllowed = target != KonanTarget.WASM32
+    val threadsAreAllowed = (target != KonanTarget.WASM32) && (target !is KonanTarget.ZEPHYR)
 
     internal val produce get() = configuration.get(KonanConfigKeys.PRODUCE)!!
 

@@ -20,35 +20,33 @@ import llvm.LLVMLinkage
 import llvm.LLVMSetLinkage
 import llvm.LLVMTypeRef
 import llvm.LLVMValueRef
-import org.jetbrains.kotlin.backend.konan.descriptors.isUnit
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.defaultType
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.fqNameSafe
+import org.jetbrains.kotlin.backend.konan.irasdescriptors.llvmSymbolOrigin
 import org.jetbrains.kotlin.descriptors.ClassDescriptor
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
-import org.jetbrains.kotlin.ir.expressions.IrConst
+import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
-import org.jetbrains.kotlin.types.KotlinType
 import org.jetbrains.kotlin.types.TypeProjection
 import org.jetbrains.kotlin.types.replace
 
 private fun StaticData.objHeader(typeInfo: ConstPointer): Struct {
-    val containerOffsetNegative = 0 // Static object mark.
-    return Struct(runtime.objHeaderType, typeInfo, Int32(containerOffsetNegative))
+    val container = NullPointer(runtime.containerHeaderType) // Static object mark.
+    return Struct(runtime.objHeaderType, typeInfo, container)
 }
 
 private fun StaticData.arrayHeader(typeInfo: ConstPointer, length: Int): Struct {
     assert (length >= 0)
-    val containerOffsetNegative = 0 // Static object mark.
-    return Struct(runtime.arrayHeaderType, typeInfo, Int32(containerOffsetNegative), Int32(length))
+    val container = NullPointer(runtime.containerHeaderType) // Static object mark.
+    return Struct(runtime.arrayHeaderType, typeInfo, container, Int32(length))
 }
 
 internal fun StaticData.createKotlinStringLiteral(value: String): ConstPointer {
-    val type = context.builtIns.stringType
-
     val name = "kstr:" + value.globalHashBase64
     val elements = value.toCharArray().map(::Char16)
 
-    val objRef = createKotlinArray(type, elements)
+    val objRef = createKotlinArray(context.ir.symbols.string.owner, elements)
 
     val res = createAlias(name, objRef)
     LLVMSetLinkage(res.llvm, LLVMLinkage.LLVMWeakAnyLinkage)
@@ -56,20 +54,13 @@ internal fun StaticData.createKotlinStringLiteral(value: String): ConstPointer {
     return res
 }
 
-private fun StaticData.createRef(type: KotlinType, objHeaderPtr: ConstPointer): ConstPointer {
-    val llvmType = getLLVMType(type)
-    return if (llvmType != objHeaderPtr.llvmType) {
-        objHeaderPtr.bitcast(llvmType)
-    } else {
-        objHeaderPtr
-    }
-}
+private fun StaticData.createRef(objHeaderPtr: ConstPointer) = objHeaderPtr.bitcast(kObjHeaderPtr)
 
-internal fun StaticData.createKotlinArray(arrayType: KotlinType, elements: List<LLVMValueRef>) =
-        createKotlinArray(arrayType, elements.map { constValue(it) }).llvm
+internal fun StaticData.createKotlinArray(arrayClass: IrClass, elements: List<LLVMValueRef>) =
+        createKotlinArray(arrayClass, elements.map { constValue(it) }).llvm
 
-internal fun StaticData.createKotlinArray(arrayType: KotlinType, elements: List<ConstValue>): ConstPointer {
-    val typeInfo = arrayType.typeInfoPtr!!
+internal fun StaticData.createKotlinArray(arrayClass: IrClass, elements: List<ConstValue>): ConstPointer {
+    val typeInfo = arrayClass.typeInfoPtr
 
     val bodyElementType: LLVMTypeRef = elements.firstOrNull()?.llvmType ?: int8Type
     // (use [0 x i8] as body if there are no elements)
@@ -84,11 +75,11 @@ internal fun StaticData.createKotlinArray(arrayType: KotlinType, elements: List<
 
     global.setInitializer(Struct(compositeType, arrayHeader, arrayBody))
 
-    return createRef(arrayType, objHeaderPtr)
+    return createRef(objHeaderPtr)
 }
 
-internal fun StaticData.createKotlinObject(type: KotlinType, body: ConstValue): ConstPointer {
-    val typeInfo = type.typeInfoPtr!!
+internal fun StaticData.createKotlinObject(type: IrClass, body: ConstValue): ConstPointer {
+    val typeInfo = type.typeInfoPtr
 
     val compositeType = structType(runtime.objHeaderType, body.llvmType)
 
@@ -99,8 +90,11 @@ internal fun StaticData.createKotlinObject(type: KotlinType, body: ConstValue): 
 
     global.setInitializer(Struct(compositeType, objHeader, body))
 
-    return createRef(type, objHeaderPtr)
+    return createRef(objHeaderPtr)
 }
+
+internal fun StaticData.createInitializer(type: IrClass, body: ConstValue): ConstValue =
+        Struct(objHeader(type.typeInfoPtr), body)
 
 private fun StaticData.getArrayListClass(): ClassDescriptor {
     val module = context.irModule!!.descriptor
@@ -118,10 +112,7 @@ private fun StaticData.getArrayListClass(): ClassDescriptor {
  * @param length value for `length: Int` field.
  */
 internal fun StaticData.createArrayList(elementType: TypeProjection, array: ConstPointer, length: Int): ConstPointer {
-    val arrayListClass = getArrayListClass()
-
-    // type is ArrayList<elementType>:
-    val type = arrayListClass.defaultType.replace(listOf(elementType))
+    val arrayListClass = context.ir.symbols.arrayList.owner
 
     val arrayListFqName = arrayListClass.fqNameSafe
     val arrayListFields = mapOf(
@@ -140,15 +131,13 @@ internal fun StaticData.createArrayList(elementType: TypeProjection, array: Cons
         
     val body = Struct(*(sorted.values.toTypedArray()))
 
-    return createKotlinObject(type, body)
+    return createKotlinObject(arrayListClass, body)
 }
 
 
-internal fun StaticData.createUnitInstance(descriptor: ClassDescriptor,
-                                           bodyType: LLVMTypeRef,
+internal fun StaticData.createUnitInstance(bodyType: LLVMTypeRef,
                                            typeInfo: ConstPointer
 ): ConstPointer {
-    assert (descriptor.isUnit())
     assert (getStructElements(bodyType).isEmpty())
     val objHeader = objHeader(typeInfo)
     val global = this.placeGlobal(theUnitInstanceName, objHeader, isExported = true)
@@ -157,7 +146,7 @@ internal fun StaticData.createUnitInstance(descriptor: ClassDescriptor,
 
 internal val ContextUtils.theUnitInstanceRef: ConstPointer
     get() {
-        val unitDescriptor = context.builtIns.unit
+        val unitDescriptor = context.ir.symbols.unit.owner
         return if (isExternal(unitDescriptor)) {
             constPointer(importGlobal(
                     theUnitInstanceName,

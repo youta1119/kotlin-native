@@ -38,6 +38,7 @@ import org.jetbrains.kotlin.resolve.DescriptorUtils
 import org.jetbrains.kotlin.resolve.descriptorUtil.isExtension
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 import org.jetbrains.kotlin.types.KotlinType
+import org.jetbrains.kotlin.types.typeUtil.isUnit
 
 private enum class ScopeKind {
     TOP,
@@ -87,7 +88,27 @@ private val cKeywords = setOf(
         "_Alignas", "_Alignof", "_Atomic", "_Generic", "_Noreturn", "_Static_assert", "_Thread_local",
         // Not exactly keywords, but reserved or standard-defined.
         "and", "not", "or", "xor",
-        "bool", "complex", "imaginary"
+        "bool", "complex", "imaginary",
+
+         // C++ keywords not listed above.
+        "alignas", "alignof", "and_eq", "asm",
+        "bitand", "bitor", "bool",
+        "catch", "char16_t", "char32_t", "class", "compl", "constexpr", "const_cast",
+        "decltype", "delete", "dynamic_cast",
+        "explicit", "export",
+        "false", "friend",
+        "inline",
+        "mutable",
+        "namespace", "new", "noexcept", "not_eq", "nullptr",
+        "operator", "or_eq",
+        "private", "protected", "public",
+        "reinterpret_cast",
+        "static_assert",
+        "template", "this", "thread_local", "throw", "true", "try", "typeid", "typename",
+        "using",
+        "virtual",
+        "wchar_t",
+        "xor_eq"
 )
 
 private val cnameAnnotation = FqName("konan.internal.CName")
@@ -198,7 +219,7 @@ private class ExportedElement(val kind: ElementKind,
             isFunction -> {
                 val function = declaration as FunctionDescriptor
                 cname = "_konan_function_${owner.nextFunctionIndex()}"
-                val llvmFunction = owner.codegen.llvmFunction(function)
+                val llvmFunction = owner.codegen.llvmFunction(context.ir.getFromCurrentModule(function))
                 // If function is virtual, we need to resolve receiver properly.
                 val bridge = if (!DescriptorUtils.isTopLevelDeclaration(function) && !function.isExtension &&
                         function.isOverridable) {
@@ -207,7 +228,7 @@ private class ExportedElement(val kind: ElementKind,
                         val receiver = param(0)
                         val numParams = LLVMCountParams(llvmFunction)
                         val args = (0..numParams - 1).map { index -> param(index) }
-                        val callee = lookupVirtualImpl(receiver, function)
+                        val callee = lookupVirtualImpl(receiver, context.ir.getFromCurrentModule(function))
                         val result = call(callee, args, exceptionHandler = ExceptionHandler.Caller, verbatim = true)
                         ret(result)
                     }
@@ -223,14 +244,15 @@ private class ExportedElement(val kind: ElementKind,
                 val builder = LLVMCreateBuilder()!!
                 val bb = LLVMAppendBasicBlock(getTypeFunction, "")!!
                 LLVMPositionBuilderAtEnd(builder, bb)
-                LLVMBuildRet(builder, (declaration as ClassDescriptor).typeInfoPtr.llvm)
+                LLVMBuildRet(builder, context.ir.getFromCurrentModule(declaration as ClassDescriptor).typeInfoPtr.llvm)
                 LLVMDisposeBuilder(builder)
             }
             isEnumEntry -> {
                 // Produce entry getter.
                 cname = "_konan_function_${owner.nextFunctionIndex()}"
                 generateFunction(owner.codegen, owner.kGetObjectFuncType, cname) {
-                    val value = getEnumEntry(declaration as ClassDescriptor, ExceptionHandler.Caller)
+                    val irEnumEntry = context.ir.getEnumEntryFromCurrentModule(declaration as ClassDescriptor)
+                    val value = getEnumEntry(irEnumEntry, ExceptionHandler.Caller)
                     ret(value)
                 }
             }
@@ -252,6 +274,9 @@ private class ExportedElement(val kind: ElementKind,
     val isClass = declaration is ClassDescriptor && declaration.kind != ClassKind.ENUM_ENTRY
     val isEnumEntry = declaration is ClassDescriptor && declaration.kind == ClassKind.ENUM_ENTRY
 
+
+    fun KotlinType.includeToSignature() = !this.isUnit()
+
     fun makeCFunctionSignature(shortName: Boolean): List<Pair<String, ClassDescriptor>> {
         if (!isFunction) {
             throw Error("only for functions")
@@ -266,9 +291,11 @@ private class ExportedElement(val kind: ElementKind,
             else -> uniqueName(original, shortName) to TypeUtils.getClassDescriptor(original.returnType!!)!!
         }
         val uniqueNames = owner.paramsToUniqueNames(original.explicitParameters)
-        val params = ArrayList(original.explicitParameters.mapIndexed { idx, it ->
-            uniqueNames[idx] to TypeUtils.getClassDescriptor(it.type)!!
-        })
+        val params = ArrayList(original.explicitParameters
+                .filter { it.type.includeToSignature() }
+                .map { it ->
+                    uniqueNames[it]!! to TypeUtils.getClassDescriptor(it.type)!!
+                })
         return listOf(returned) + params
     }
 
@@ -284,9 +311,11 @@ private class ExportedElement(val kind: ElementKind,
             else -> original.returnType!!
         }
         val returnedClass = TypeUtils.getClassDescriptor(returnedType)!!
-        val params = ArrayList(original.allParameters.map {
-            owner.translateTypeBridge(TypeUtils.getClassDescriptor(it.type)!!)
-        })
+        val params = ArrayList(original.allParameters
+                .filter { it.type.includeToSignature() }
+                .map {
+                    owner.translateTypeBridge(TypeUtils.getClassDescriptor(it.type)!!)
+                })
         if (owner.isMappedToReference(returnedClass) || owner.isMappedToString(returnedClass)) {
             params += "KObjHeader**"
         }
@@ -358,7 +387,9 @@ private class ExportedElement(val kind: ElementKind,
                     "((${owner.translateType(clazz)}){ .pinned = CreateStablePointer(${name})})"
                 }
             else -> {
-                assert(clazz.isValueType)
+                assert(clazz.isValueType) {
+                    println(clazz.toString())
+                }
                 name
             }
         }
@@ -433,6 +464,9 @@ private class ExportedElement(val kind: ElementKind,
                 val original = descriptor.original
                 addUsedType(original.correspondingProperty.type, set)
             }
+            is ClassDescriptor -> {
+                set += descriptor
+            }
         }
     }
 }
@@ -462,16 +496,16 @@ internal class CAdapterGenerator(
     private lateinit var outputStreamWriter: PrintWriter
     private val paramNamesRecorded = mutableMapOf<String, Int>()
 
-    internal fun paramsToUniqueNames(params: List<ParameterDescriptor>): List<String> {
+    internal fun paramsToUniqueNames(params: List<ParameterDescriptor>): Map<ParameterDescriptor, String> {
         paramNamesRecorded.clear()
-        return params.map {
+        return params.associate {
             val name = translateName(it.name.asString()) 
             val count = paramNamesRecorded.getOrDefault(name, 0)
             paramNamesRecorded[name] = count + 1
             if (count == 0) {
-                name
+                it to name
             } else {
-                "$name${count.toString()}"
+                it to "$name${count.toString()}"
             }
         }
     }
@@ -670,7 +704,7 @@ internal class CAdapterGenerator(
                     element.isClass ->
                         output("/* Type for ${element.name} = */  ${element.cname}, ", indent)
                     element.isEnumEntry ->
-                        output("/* enum entry getter ${element.name} = */  ${element.cname}_impl", indent)
+                        output("/* enum entry getter ${element.name} = */  ${element.cname}_impl,", indent)
                 // TODO: handle properties.
                 }
             }
@@ -829,7 +863,7 @@ internal class CAdapterGenerator(
         output("RUNTIME_USED ${prefix}_ExportedSymbols* $exportedSymbol(void) { return &__konan_symbols;}")
         outputStreamWriter.close()
 
-        if (context.config.target.family == Family.WINDOWS) {
+        if (context.config.target.family == Family.MINGW) {
             outputStreamWriter = context.config.tempFiles
                     .cAdapterDef
                     .printWriter()
