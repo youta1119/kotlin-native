@@ -36,6 +36,9 @@
 #import "Utils.h"
 #import "Exceptions.h"
 
+// Note: defined by a compiler-generated bitcode.
+extern "C" const uint8_t objCExportEnabled;
+
 struct ObjCToKotlinMethodAdapter {
   const char* selector;
   const char* encoding;
@@ -513,6 +516,16 @@ extern "C" id Kotlin_ObjCExport_refToObjC(ObjHeader* obj) {
   return Kotlin_ObjCExport_refToObjC_slowpath(obj);
 }
 
+extern "C" ALWAYS_INLINE id Kotlin_Interop_refToObjC(ObjHeader* obj) {
+  if (obj == nullptr) {
+    return nullptr;
+  } else if (!objCExportEnabled || obj->type_info() == theObjCPointerHolderTypeInfo) {
+    return *reinterpret_cast<id*>(obj + 1); // First field.
+  } else {
+    return Kotlin_ObjCExport_refToObjC(obj);
+  }
+}
+
 extern "C" OBJ_GETTER(Kotlin_ObjCExport_refFromObjC, id obj) {
   if (obj == nullptr) RETURN_OBJ(nullptr);
   id convertible = (id<ConvertibleToKotlin>)obj;
@@ -570,6 +583,7 @@ static const TypeInfo* createTypeInfo(
   const KStdVector<MethodTableRecord>& methodTable
 ) {
   TypeInfo* result = (TypeInfo*)konanAllocMemory(sizeof(TypeInfo) + vtable.size() * sizeof(void*));
+  result->typeInfo_ = result;
 
   MakeGlobalHash(nullptr, 0, &result->name_);
   result->instanceSize_ = superType->instanceSize_;
