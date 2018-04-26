@@ -376,17 +376,10 @@ inline container_size_t alignUp(container_size_t size, int alignment) {
   return (size + alignment - 1) & ~(alignment - 1);
 }
 
-#if KONAN_OBJECTS_CAN_HAVE_RESERVED_TAIL
-// Note: defined by a compiler-generated bitcode.
-extern "C" const container_size_t kObjectReservedTailSize;
-#else
-constexpr container_size_t kObjectReservedTailSize = 0;
-#endif
-
 // TODO: shall we do padding for alignment?
 inline container_size_t objectSize(const ObjHeader* obj) {
   const TypeInfo* type_info = obj->type_info();
-  container_size_t size = kObjectReservedTailSize + (type_info->instanceSize_ < 0 ?
+  container_size_t size = (type_info->instanceSize_ < 0 ?
       // An array.
       ArrayDataSizeBytes(obj->array()) + sizeof(ArrayHeader)
       :
@@ -415,50 +408,31 @@ inline bool isRefCounted(KConstRef object) {
 extern "C" {
 
 void objc_release(void* ptr);
-void Kotlin_ObjCExport_releaseReservedObjectTail(ObjHeader* obj);
+void Kotlin_ObjCExport_releaseAssociatedObject(void* associatedObject);
 RUNTIME_NORETURN void ThrowFreezingException();
 RUNTIME_NORETURN void ThrowInvalidMutabilityException();
 
 }  // extern "C"
 
-inline void runDeallocationHooks(ObjHeader* obj) {
-  if (obj->has_meta_object()) {
-    ObjHeader::destroyMetaObject(&obj->typeInfoOrMeta_);
-  }
-#if KONAN_OBJC_INTEROP
-  // TODO: rewrite using meta-object.
-  if (obj->type_info() == theObjCPointerHolderTypeInfo) {
-    void* objcPtr =  *reinterpret_cast<void**>(obj + 1); // TODO: use more reliable layout description
-    objc_release(objcPtr);
-  } else {
-    if (HasReservedObjectTail(obj)) {
-      Kotlin_ObjCExport_releaseReservedObjectTail(obj);
-    }
-  }
-#endif
-}
-
 inline void runDeallocationHooks(ContainerHeader* container) {
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
 
   for (int index = 0; index < container->objectCount(); index++) {
-    runDeallocationHooks(obj);
+    if (obj->has_meta_object()) {
+      ObjHeader::destroyMetaObject(&obj->typeInfoOrMeta_);
+    }
 
     obj = reinterpret_cast<ObjHeader*>(
       reinterpret_cast<uintptr_t>(obj) + objectSize(obj));
   }
 }
 
-static inline void DeinitInstanceBodyImpl(const TypeInfo* typeInfo, void* body) {
+void DeinitInstanceBody(const TypeInfo* typeInfo, void* body) {
   for (int index = 0; index < typeInfo->objOffsetsCount_; index++) {
     ObjHeader** location = reinterpret_cast<ObjHeader**>(
         reinterpret_cast<uintptr_t>(body) + typeInfo->objOffsets_[index]);
     UpdateRef(location, nullptr);
   }
-}
-
-void DeinitInstanceBody(const TypeInfo* typeInfo, void* body) {
-  DeinitInstanceBodyImpl(typeInfo, body);
 }
 
 namespace {
@@ -518,15 +492,7 @@ inline void processFinalizerQueue(MemoryState* state) {
 #endif
 
 inline void scheduleDestroyContainer(
-    MemoryState* state, ContainerHeader* container, bool clearExternalRefs) {
-  if (clearExternalRefs) {
-    traverseContainerObjectFields(container, [](ObjHeader** location) {
-        ObjHeader* ref = *location;
-        // Frozen object references do not participate in trial deletion, so shall be explicitly freed.
-        if (ref != nullptr && ref->container()->frozen())
-          UpdateRef(location, nullptr);
-      });
-  }
+    MemoryState* state, ContainerHeader* container) {
 #if USE_GC
   state->finalizerQueue->push_front(container);
   // We cannot clean finalizer queue while in GC.
@@ -535,8 +501,8 @@ inline void scheduleDestroyContainer(
   }
 #else
   atomicAdd(&allocCount, -1);
-  CONTAINER_DESTROY_EVENT(state, header)
-  konanFreeMemory(header);
+  CONTAINER_DESTROY_EVENT(state, container)
+  konanFreeMemory(container);
 #endif
 }
 
@@ -697,7 +663,7 @@ void MarkRoots(MemoryState* state) {
     } else {
       container->resetBuffered();
       if (color == CONTAINER_TAG_GC_BLACK && rcIsZero) {
-        scheduleDestroyContainer(state, container, true);
+        scheduleDestroyContainer(state, container);
       }
     }
   }
@@ -733,18 +699,22 @@ void Scan(ContainerHeader* container) {
 }
 
 void CollectWhite(MemoryState* state, ContainerHeader* container) {
-  if (container->color() != CONTAINER_TAG_GC_WHITE
-        || container->buffered())
+  if (container->color() != CONTAINER_TAG_GC_WHITE || container->buffered())
     return;
   container->setColor(CONTAINER_TAG_GC_BLACK);
-  traverseContainerReferredObjects(container, [state](ObjHeader* ref) {
+  traverseContainerObjectFields(container, [state](ObjHeader** location) {
+    auto ref = *location;
+    if (ref == nullptr) return;
     auto childContainer = ref->container();
     RuntimeAssert(!isArena(childContainer), "A reference to local object is encountered");
-    if (!childContainer->permanentOrFrozen()) {
+    if (childContainer->permanentOrFrozen()) {
+      UpdateRef(location, nullptr);
+    } else {
       CollectWhite(state, childContainer);
     }
   });
-  scheduleDestroyContainer(state, container, true);
+  runDeallocationHooks(container);
+  scheduleDestroyContainer(state, container);
 }
 
 inline void AddRef(ContainerHeader* header) {
@@ -838,6 +808,11 @@ void ObjHeader::destroyMetaObject(TypeInfo** location) {
     WeakReferenceCounterClear(meta->counter_);
     UpdateRef(&meta->counter_, nullptr);
   }
+
+#ifdef KONAN_OBJC_INTEROP
+  Kotlin_ObjCExport_releaseAssociatedObject(meta->associatedObject_);
+#endif
+
   konanFreeMemory(meta);
 }
 
@@ -887,7 +862,7 @@ void FreeAggregatingFrozenContainer(ContainerHeader* container) {
     FreeContainer(*subContainer++);
   }
   --state->finalizerQueueSuspendCount;
-  scheduleDestroyContainer(state, container, false);
+  scheduleDestroyContainer(state, container);
   MEMORY_LOG("Freeing subcontainers done\n");
 }
 
@@ -900,9 +875,9 @@ void FreeContainer(ContainerHeader* container) {
   if (isAggregatingFrozenContainer(container)) {
     FreeAggregatingFrozenContainer(container);
     return;
-  } else {
-    runDeallocationHooks(container);
   }
+
+  runDeallocationHooks(container);
 
   // Now let's clean all object's fields in this container.
   traverseContainerObjectFields(container, [](ObjHeader** location) {
@@ -913,14 +888,14 @@ void FreeContainer(ContainerHeader* container) {
   if (isFreeable(container)) {
     container->setColor(CONTAINER_TAG_GC_BLACK);
     if (!container->buffered())
-      scheduleDestroyContainer(state, container, false);
+      scheduleDestroyContainer(state, container);
   }
 }
 
 void ObjectContainer::Init(const TypeInfo* typeInfo) {
   RuntimeAssert(typeInfo->instanceSize_ >= 0, "Must be an object");
   uint32_t alloc_size =
-      sizeof(ContainerHeader) + sizeof(ObjHeader) + typeInfo->instanceSize_ + kObjectReservedTailSize;
+      sizeof(ContainerHeader) + sizeof(ObjHeader) + typeInfo->instanceSize_;
   header_ = AllocContainer(alloc_size);
   if (header_) {
     // One object in this container.
@@ -936,7 +911,7 @@ void ArrayContainer::Init(const TypeInfo* typeInfo, uint32_t elements) {
   RuntimeAssert(typeInfo->instanceSize_ < 0, "Must be an array");
   uint32_t alloc_size =
       sizeof(ContainerHeader) + sizeof(ArrayHeader) -
-      typeInfo->instanceSize_ * elements + kObjectReservedTailSize;
+      typeInfo->instanceSize_ * elements;
   header_ = AllocContainer(alloc_size);
   RuntimeAssert(header_ != nullptr, "Cannot alloc memory");
   if (header_) {
@@ -1019,7 +994,7 @@ ObjHeader** ArenaContainer::getSlot() {
 
 ObjHeader* ArenaContainer::PlaceObject(const TypeInfo* type_info) {
   RuntimeAssert(type_info->instanceSize_ >= 0, "must be an object");
-  uint32_t size = type_info->instanceSize_ + sizeof(ObjHeader) + kObjectReservedTailSize;
+  uint32_t size = type_info->instanceSize_ + sizeof(ObjHeader);
   ObjHeader* result = reinterpret_cast<ObjHeader*>(place(size));
   if (!result) {
     return nullptr;
@@ -1032,7 +1007,7 @@ ObjHeader* ArenaContainer::PlaceObject(const TypeInfo* type_info) {
 
 ArrayHeader* ArenaContainer::PlaceArray(const TypeInfo* type_info, uint32_t count) {
   RuntimeAssert(type_info->instanceSize_ < 0, "must be an array");
-  container_size_t size = sizeof(ArrayHeader) - type_info->instanceSize_ * count + kObjectReservedTailSize;
+  container_size_t size = sizeof(ArrayHeader) - type_info->instanceSize_ * count;
   ArrayHeader* result = reinterpret_cast<ArrayHeader*>(place(size));
   if (!result) {
     return nullptr;
@@ -1218,16 +1193,6 @@ OBJ_GETTER(InitSharedInstance,
   }
 #endif
 #endif
-}
-
-bool HasReservedObjectTail(ObjHeader* obj) {
-  return kObjectReservedTailSize != 0 && !obj->permanent();
-}
-
-void* GetReservedObjectTail(ObjHeader* obj) {
-  return reinterpret_cast<void*>(
-    reinterpret_cast<uintptr_t>(obj) + objectSize(obj) - kObjectReservedTailSize
-  );
 }
 
 void SetRef(ObjHeader** location, const ObjHeader* object) {

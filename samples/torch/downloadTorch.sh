@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 
-TH_TARGET_DIRECTORY=~/.konan/third-party/torch
+KONAN_USER_DIR=${KONAN_DATA_DIR:-"$HOME/.konan"}
+TH_TARGET_DIRECTORY="$KONAN_USER_DIR/third-party/torch"
 NO_CUDA=true # set to false for GPU support
 
 if [ ! -d $TH_TARGET_DIRECTORY/include/THNN ]; then
     git clone https://github.com/pytorch/pytorch.git
+    # Current pytorch master fails the build so we need to checkout a correct revision.
+    cd pytorch && git checkout 310c3735b9eb97f30cee743b773e5bb054989edc^ && cd ../
 
     mkdir build_torch
     cd build_torch

@@ -89,7 +89,7 @@ internal class SpecialDeclarationsFactory(val context: Context) {
         val irFunction = overriddenFunctionDescriptor.descriptor
         val descriptor = irFunction.descriptor
         assert(overriddenFunctionDescriptor.needBridge,
-                { "Function $descriptor is not needed in a bridge to call overridden function ${overriddenFunctionDescriptor.overriddenDescriptor}" })
+                { "Function $descriptor is not needed in a bridge to call overridden function ${overriddenFunctionDescriptor.overriddenDescriptor.descriptor}" })
         val bridgeDirections = overriddenFunctionDescriptor.bridgeDirections
         return bridgesDescriptors.getOrPut(irFunction to bridgeDirections) {
             val newDescriptor = SimpleFunctionDescriptorImpl.create(
@@ -248,6 +248,9 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     var phase: KonanPhase? = null
     var depth: Int = 0
 
+    lateinit var privateFunctions: List<IrFunction>
+    lateinit var privateClasses: List<IrClass>
+
     // Cache used for source offset->(line,column) mapping.
     val fileEntryCache = mutableMapOf<String, SourceManager.FileEntry>()
 
@@ -394,8 +397,9 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
 
     lateinit var debugInfo: DebugInfo
 
-    val isDynamicLibrary: Boolean by lazy {
-        config.configuration.get(KonanConfigKeys.PRODUCE) == CompilerOutputKind.DYNAMIC
+    val isNativeLibrary: Boolean by lazy {
+        val kind = config.configuration.get(KonanConfigKeys.PRODUCE)
+        kind == CompilerOutputKind.DYNAMIC || kind == CompilerOutputKind.STATIC
     }
 }
 

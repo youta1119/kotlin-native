@@ -26,7 +26,7 @@ buildscript {
     }
 
     dependencies {
-        classpath "org.jetbrains.kotlin:kotlin-native-gradle-plugin"
+        classpath "org.jetbrains.kotlin:kotlin-native-gradle-plugin:$gradlePluginVersion"
     }
     ext.useCustomDist = project.hasProperty("konan.home")
     if (!useCustomDist) {
@@ -75,7 +75,7 @@ allprojects {
     sourceSets {
         // backend.native/tests
         testOutputLocal {
-           output.dir(rootProject.file("$testOutputRoot/local"))
+            output.dir(rootProject.file("$testOutputRoot/local"))
         }
 
         // backend.native/tests/external
@@ -86,6 +86,11 @@ allprojects {
         // backend.native/tests/stdlib_external
         testOutputStdlib {
             output.dir(rootProject.file("$testOutputRoot/stdlib"))
+        }
+
+        // backend.native/tests/framework
+        testOutputFramework {
+            output.dir(rootProject.file("$testOutputRoot/framework"))
         }
     }
 }
@@ -152,6 +157,9 @@ def tasksOf(Closure<Task> filter) {
 run {
     def tasks = tasksOf { it instanceof KonanTest && it.inDevelopersRun }
     dependsOn(tasks)
+
+    // Add framework tests
+    dependsOn(project.tasks.withType(FrameworkTest))
 }
 
 // Collect results in one json.
@@ -352,6 +360,16 @@ task function_defaults10(type: RunKonanTest) {
 task function_defaults_from_fake_override(type: RunKonanTest) {
     goldValue = "42\n"
     source = "codegen/function/defaultsFromFakeOverride.kt"
+}
+
+task function_defaults_with_vararg1(type: RunKonanTest) {
+    goldValue = "Hello , Correct!\nHello World, Correct!\n , Correct!\n"
+    source = "codegen/function/defaultsWithVarArg1.kt"
+}
+
+task function_defaults_with_vararg2(type: RunKonanTest) {
+    goldValue = "1\n2\n42\n"
+    source = "codegen/function/defaultsWithVarArg2.kt"
 }
 
 task sum_3const(type: RunKonanTest) {
@@ -948,6 +966,12 @@ task bridges_linkTest(type: LinkKonanTest) {
     goldValue = "42\n42\n42\n"
     source = "codegen/bridges/linkTest_main.kt"
     lib = "codegen/bridges/linkTest_lib.kt"
+}
+
+task bridges_linkTest2(type: LinkKonanTest) {
+    goldValue = "true\n"
+    source = "codegen/bridges/linkTest2_main.kt"
+    lib = "codegen/bridges/linkTest2_lib.kt"
 }
 
 task bridges_special(type: RunKonanTest) {
@@ -2081,6 +2105,11 @@ task memory_weak0(type: RunKonanTest) {
     source = "runtime/memory/weak0.kt"
 }
 
+task memory_weak1(type: RunKonanTest) {
+    goldValue = "OK\n"
+    source = "runtime/memory/weak1.kt"
+}
+
 task mpp1(type: RunStandaloneKonanTest) {
     source = "codegen/mpp/mpp1.kt"
     flags = ['-tr', '-Xmulti-platform']
@@ -2343,6 +2372,11 @@ task serialized_default_args(type: LinkKonanTest) {
     goldValue = "SomeDataClass(first=17, second=666, third=23)\n"
 }
 
+task serialized_no_typemap(type: RunStandaloneKonanTest) {
+    source = "serialization/regression/no_type_map.kt"
+    goldValue = "OK\n"
+}
+
 task testing_annotations(type: RunStandaloneKonanTest) {
     source = "testing/annotations.kt"
     flags = ['-tr']
@@ -2409,19 +2443,6 @@ task driver_opt(type: RunDriverKonanTest) {
     goldValue = "Hello, world!\n"
     source = "runtime/basic/driver0.kt"
     flags = ["-opt"]
-}
-
-// Check that cross-compilation completes successfully. We can't run such 
-// binaries, but we verify that the compiler has been built, operational 
-// and accepts the -target flag, resulting in a successful compilation.
-task driver_cross(type: RunDriverKonanTest) {
-    source = "runtime/basic/driver0.kt"
-    run = false
-    if (isLinux()) {
-        flags = ["-target", "raspberrypi"]
-    } else if (isMac()) {
-        flags = ["-target", "iphone"]
-    }
 }
 
 // Enable when deserialization for default arguments is fixed.
@@ -2633,6 +2654,49 @@ task produce_dynamic(type: DynamicKonanTest) {
                 "enum100 = 100\n" +
                 "object = 42\n" +
                 "topLevel = 777 3\n"
+}
+
+/**
+ * Get sourceSet's output path as a string
+ */
+static String outputPath(SourceSet set) {
+    return set.output.getDirs().getSingleFile().toString()
+}
+
+if (isMac() && project.testTarget != 'wasm32') {
+    def target = ext.platformManager.targetByName(project.testTarget ?: 'host').name
+
+    task testValuesFramework(type: FrameworkTest) {
+        frameworkName = 'Values'
+        konanArtifacts {
+            framework(frameworkName, targets: [ target ]) {
+                srcDir 'framework/values'
+                baseDir outputPath(sourceSets.testOutputFramework) + "/$frameworkName"
+
+                if (!useCustomDist) {
+                    dependsOn ":${target}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                }
+            }
+        }
+        swiftSources = ['framework/values/values.swift']
+        dependsOn "compileKonan${frameworkName}"
+    }
+
+    task testStdlibFramework(type: FrameworkTest) {
+        frameworkName = 'Stdlib'
+        konanArtifacts {
+            framework(frameworkName, targets: [ target ]) {
+                srcDir 'framework/stdlib'
+                baseDir outputPath(sourceSets.testOutputFramework) + "/$frameworkName"
+
+                if (!useCustomDist) {
+                    dependsOn ":${target}CrossDistRuntime", ':commonDistRuntime', ':distCompiler'
+                }
+            }
+        }
+        swiftSources = ['framework/stdlib/stdlib.swift']
+        dependsOn "compileKonan${frameworkName}"
+    }
 }
 
 task buildKonanStdlibTests(type: BuildKonanTest) {

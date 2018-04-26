@@ -17,6 +17,9 @@ everything needed to interact with an external library.
 types, function and constants into the Kotlin world. Generated stubs can be
 imported into an IDE for purposes of code completion and navigation.
 
+ Interoperability with Swift/Objective-C is provided too and covered by the
+separate document [OBJC_INTEROP.md](OBJC_INTEROP.md).
+
 ## Simple example ##
 
 Build the dependencies and the compiler (see `README.md`).
@@ -336,6 +339,22 @@ manually:
     ```
 
 In all cases the C string is supposed to be encoded as UTF-8.
+
+### Scope-local pointers ###
+
+It is possible to create scope-stable pointer of C representation of `CValues<T>`
+instance using `CValues<T>.ptr` extension property available under memScoped { ... }.
+It allows to use APIs which requires C pointers with lifetime bound to certain `MemScope`. For example:
+```
+memScoped {
+    items = arrayOfNulls<CPointer<ITEM>?>(6)
+    arrayOf("one", "two").forEachIndexed { index, value -> items[index] = value.cstr.ptr }
+    menu = new_menu("Menu".cstr.ptr, items.toCValues().ptr)
+    ...
+}
+```
+In this example all values passed to the C API `new_menu()` have lifetime of innermost `memScope`
+it belongs to. Once control flow will leave `memScoped` scope C pointers become invalid.
 
 ### Passing and receiving structs by value ###
 

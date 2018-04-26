@@ -179,7 +179,7 @@ internal object Devirtualization {
         private fun DataFlowIR.Type.resolved(): DataFlowIR.Type.Declared {
             if (this is DataFlowIR.Type.Declared) return this
             val hash = (this as DataFlowIR.Type.External).hash
-            return externalModulesDFG.publicTypes[hash] ?: error("Unable to resolve exported type $hash")
+            return externalModulesDFG.publicTypes[hash] ?: error("Unable to resolve exported type $this")
         }
 
         private fun DataFlowIR.FunctionSymbol.resolved(): DataFlowIR.FunctionSymbol {
@@ -355,6 +355,7 @@ internal object Devirtualization {
                             if (node.receiverType == DataFlowIR.Type.Virtual)
                                 continue@nodeLoop
                             val receiverType = node.receiverType.resolved()
+                            val vCallReturnType = node.returnType.resolved()
 
                             DEBUG_OUTPUT(1) {
                                 println("Adding virtual callsite:")
@@ -366,6 +367,12 @@ internal object Devirtualization {
                                 typeHierarchy.inheritorsOf(receiverType)
                                         .filter { instantiatingClasses.contains(it) }
                                         .forEach { println("        $it") }
+                            }
+
+                            if (entryPoint == null && vCallReturnType.isFinal) {
+                                // If we are in a library and facing final return type then
+                                // this type can be returned by some user of this library, so propagate it explicitly.
+                                addInstantiatingClass(vCallReturnType)
                             }
 
                             typesVirtualCallSites.getOrPut(receiverType, { mutableListOf() }).add(node)
@@ -714,10 +721,10 @@ internal object Devirtualization {
                     return if (calleeConstraintGraph == null) {
                         constraintGraph.externalFunctions.getOrPut(resolvedCallee) {
                             val fictitiousReturnNode = ordinaryNode { "External$resolvedCallee" }
-                            val possibleReturnTypes = typeHierarchy.inheritorsOf(returnType).filter { instantiatingClasses.containsKey(it) }
-                            for (type in possibleReturnTypes) {
-                                concreteClass(type).addEdge(fictitiousReturnNode)
-                            }
+                            if (returnType.isFinal)
+                                concreteClass(returnType).addEdge(fictitiousReturnNode)
+                            else
+                                constraintGraph.virtualNode.addEdge(fictitiousReturnNode)
                             fictitiousReturnNode
                         }
                     } else {
@@ -802,6 +809,8 @@ internal object Devirtualization {
 
                             val returnType = node.returnType.resolved()
                             val receiverNode = edgeToConstraintNode(node.arguments[0])
+                            if (receiverType == DataFlowIR.Type.Virtual)
+                                constraintGraph.virtualNode.addEdge(receiverNode)
                             val castedReceiver = ordinaryNode { "CastedReceiver\$${function.symbol}" }
                             val castedEdge = createCastEdge(castedReceiver, receiverType)
                             receiverNode.addCastEdge(castedEdge)
@@ -879,8 +888,10 @@ internal object Devirtualization {
 
     class DevirtualizedCallSite(val possibleCallees: List<DevirtualizedCallee>)
 
+    class AnalysisResult(val devirtualizedCallSites: Map<DataFlowIR.Node.VirtualCall, DevirtualizedCallSite>)
+
     fun run(irModule: IrModuleFragment, context: Context, moduleDFG: ModuleDFG, externalModulesDFG: ExternalModulesDFG)
-            : Map<DataFlowIR.Node.VirtualCall, DevirtualizedCallSite> {
+            : AnalysisResult {
         val devirtualizationAnalysisResult = DevirtualizationAnalysis(context, moduleDFG, externalModulesDFG).analyze()
         val devirtualizedCallSites =
                 devirtualizationAnalysisResult
@@ -888,7 +899,7 @@ internal object Devirtualization {
                         .filter { it.key.callSite != null }
                         .associate { it.key.callSite!! to it.value }
         Devirtualization.devirtualize(irModule, context, devirtualizedCallSites)
-        return devirtualizationAnalysisResult
+        return AnalysisResult(devirtualizationAnalysisResult)
     }
 
     private fun devirtualize(irModule: IrModuleFragment, context: Context,

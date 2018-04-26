@@ -21,6 +21,8 @@ import org.gradle.api.GradleScriptException
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.plugin.*
+import org.jetbrains.kotlin.konan.KonanVersion
+import org.jetbrains.kotlin.konan.MetaVersion
 import org.jetbrains.kotlin.konan.util.DependencyProcessor
 import org.jetbrains.kotlin.konan.util.DependencySource
 import org.jetbrains.kotlin.konan.util.visibleName
@@ -31,8 +33,6 @@ open class KonanCompilerDownloadTask : DefaultTask() {
 
     internal companion object {
         internal const val BASE_DOWNLOAD_URL = "https://download.jetbrains.com/kotlin/native/builds"
-
-        internal val KONAN_PARENT_DIR = "${System.getProperty("user.home")}/.konan"
     }
 
     /**
@@ -45,25 +45,23 @@ open class KonanCompilerDownloadTask : DefaultTask() {
         if (!project.hasProperty(KonanPlugin.ProjectProperty.DOWNLOAD_COMPILER)) {
             val konanHome = project.getProperty(KonanPlugin.ProjectProperty.KONAN_HOME)
             logger.info("Use a user-defined compiler path: $konanHome")
-            if (project.hasProperty(KonanPlugin.ProjectProperty.KONAN_VERSION)) {
-                val konanVersion = project.getProperty(KonanPlugin.ProjectProperty.KONAN_VERSION)
-                logger.warn("${KonanPlugin.ProjectProperty.KONAN_VERSION.propertyName} " +
-                        "(=$konanVersion) property is ignored " +
-                        "because a user-defined compiler path is specified: $konanHome")
-            }
         } else {
             try {
                 val downloadUrlDirectory = buildString {
                     append("$BASE_DOWNLOAD_URL/")
-                    val version = project.konanVersion
-                    append(if (version.contains("dev")) "dev/" else "releases/")
+                    val version = KonanVersion.CURRENT
+                    when (version.meta) {
+                        MetaVersion.DEV -> append("dev/")
+                        else -> append("releases/")
+                    }
                     append("$version/")
                     append(project.simpleOsName)
                 }
                 val konanCompiler = project.konanCompilerName()
-                logger.info("Downloading Kotlin/Native compiler from $downloadUrlDirectory/$konanCompiler into $KONAN_PARENT_DIR")
+                val parentDir = DependencyProcessor.localKonanDir
+                logger.info("Downloading Kotlin/Native compiler from $downloadUrlDirectory/$konanCompiler into $parentDir")
                 DependencyProcessor(
-                        File(KONAN_PARENT_DIR),
+                        parentDir,
                         downloadUrlDirectory,
                         mapOf(konanCompiler to listOf(DependencySource.Remote.Public))
                 ).run()

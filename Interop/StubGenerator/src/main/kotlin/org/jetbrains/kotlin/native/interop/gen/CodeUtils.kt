@@ -38,7 +38,7 @@ typealias KotlinExpression = String
  * For this identifier constructs the string to be parsed by Kotlin as `SimpleName`
  * defined [here](https://kotlinlang.org/docs/reference/grammar.html#SimpleName).
  */
-fun String.asSimpleName(): String = if (this in kotlinKeywords) {
+fun String.asSimpleName(): String = if (this in kotlinKeywords || this.contains("$")) {
     "`$this`"
 } else {
     this
@@ -83,3 +83,10 @@ val annotationForUnableToImport
 
 fun String.applyToStrings(vararg arguments: String) =
         "${this}(${arguments.joinToString { it.quoteAsKotlinLiteral() }})"
+
+fun List<KotlinParameter>.renderParameters(scope: KotlinScope) = buildString {
+    this@renderParameters.renderParametersTo(scope, this)
+}
+
+fun List<KotlinParameter>.renderParametersTo(scope: KotlinScope, buffer: Appendable) =
+        this.joinTo(buffer, ", ") { it.render(scope) }

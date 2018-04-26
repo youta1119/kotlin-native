@@ -77,6 +77,11 @@ abstract class KonanTest extends JavaExec {
         // We don't build the compiler if a custom dist path is specified.
         if (!project.ext.useCustomDist) {
             dependsOn(project.rootProject.tasks['dist'])
+            if (project.testTarget) {
+                // if a test_target property is set then tests should depend on a crossDist
+                // otherwise runtime components would not be build for a target
+                dependsOn(project.rootProject.tasks['crossDist'])
+            }
         }
     }
 
@@ -441,6 +446,7 @@ class RunStandaloneKonanTest extends KonanTest {
 // project.exec + a shell script isolate the jvm
 // from IDEA. Use the RunKonanTest instead.
 class RunDriverKonanTest extends KonanTest {
+    public def inDevelopersRun = true
 
     RunDriverKonanTest() {
         super()
@@ -478,6 +484,7 @@ class RunDriverKonanTest extends KonanTest {
 }
 
 class RunInteropKonanTest extends KonanTest {
+    public def inDevelopersRun = true
 
     private String interop
     private NamedNativeInteropConfig interopConf

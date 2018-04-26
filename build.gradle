@@ -18,6 +18,14 @@ import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.konan.properties.*
 import org.jetbrains.kotlin.konan.util.*
 
+buildscript {
+    apply from: "gradle/kotlinGradlePlugin.gradle"
+    dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
+    }
+}
+import org.jetbrains.kotlin.konan.*
+
 defaultTasks 'clean', 'dist'
 
 convention.plugins.platformInfo = new PlatformInfo()
@@ -31,6 +39,8 @@ ext {
     kotlinStdLibModule="org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}"
     kotlinReflectModule="org.jetbrains.kotlin:kotlin-reflect:${kotlinVersion}"
     kotlinScriptRuntimeModule="org.jetbrains.kotlin:kotlin-script-runtime:${kotlinVersion}"
+
+    gradlePluginVersion = KonanVersion.CURRENT.gradlePluginVersion
 }
 
 allprojects {
@@ -158,6 +168,9 @@ task dist_compiler(dependsOn: "distCompiler")
 task dist_runtime(dependsOn: "distRuntime")
 task cross_dist(dependsOn: "crossDist")
 task list_dist(dependsOn: "listDist")
+task build {
+    dependsOn ':dist', ':distPlatformLibs'
+}
 
 task distCompiler(type: Copy) {
     dependsOn ':backend.native:jar'
@@ -332,7 +345,7 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
     dependsOn('crossDistPlatformLibs')
     dependsOn('crossDist')
     def simpleOsName = HostManager.simpleOsName()
-    baseName = "kotlin-native-$simpleOsName-${project.konanVersion}"
+    baseName = "kotlin-native-$simpleOsName-${KonanVersion.CURRENT}"
     from("$project.rootDir/dist") {
         include '**'
         exclude 'dependencies'
@@ -374,7 +387,7 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
                 return it.replace("/dist", "")
             }
             if (it.startsWith("konan.plugin.version=")) {
-                return "konan.plugin.version=$konanVersion"
+                return "konan.plugin.version=$gradlePluginVersion"
             }
             return it
         }
@@ -390,7 +403,7 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
 task uploadBundle {
     dependsOn ':bundle'
     doLast {
-        def kind = konanVersion.contains("dev") ? "dev" : "releases"
+        def kind = (KonanVersion.CURRENT.meta == MetaVersion.DEV) ? "dev" : "releases"
         def ftpSettings = [
                 server: project.findProperty("cdnUrl") ?: System.getenv("CDN_URL"),
                 userid: project.findProperty("cdnUser") ?: System.getenv("CDN_USER"),
@@ -415,14 +428,9 @@ task performance {
 }
 
 task clean {
+    dependsOn subprojects.collect { it.tasks.matching { it.name == "clean" } }
     doLast {
         delete distDir
         delete bundle.outputs.files
     }
-}
-
-// Don't run with other tasks (e.g. ./gradlew cleanAll bundle)
-task cleanAll {
-    dependsOn gradle.includedBuilds.collect { it.task(":clean") }
-    dependsOn project.getTasksByName("clean", true)
 }

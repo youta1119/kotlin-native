@@ -168,6 +168,12 @@ object KotlinTypes {
     val string by BuiltInType
     val any by BuiltInType
 
+    val list by CollectionClassifier
+    val mutableList by CollectionClassifier
+    val set by CollectionClassifier
+    val map by CollectionClassifier
+
+
     val nativePtr by InteropType
 
     val cOpaque by InteropType
@@ -179,6 +185,7 @@ object KotlinTypes {
     val objCObject by InteropClassifier
     val objCObjectMeta by InteropClassifier
     val objCClass by InteropClassifier
+    val objCClassOf by InteropClassifier
 
     val cValuesRef by InteropClassifier
 
@@ -198,20 +205,21 @@ object KotlinTypes {
 
     val cValue by InteropClassifier
 
-    private object BuiltInType {
-        operator fun getValue(thisRef: KotlinTypes, property: KProperty<*>): KotlinClassifierType =
-                Classifier.topLevel("kotlin", property.name.capitalize()).type
-    }
-
-    private object InteropClassifier {
+    private open class ClassifierAtPackage(val pkg: String) {
         operator fun getValue(thisRef: KotlinTypes, property: KProperty<*>): Classifier =
-                Classifier.topLevel("kotlinx.cinterop", property.name.capitalize())
+                Classifier.topLevel(pkg, property.name.capitalize())
     }
 
-    private object InteropType {
+    private open class TypeAtPackage(val pkg: String) {
         operator fun getValue(thisRef: KotlinTypes, property: KProperty<*>): KotlinClassifierType =
-                InteropClassifier.getValue(thisRef, property).type
+                Classifier.topLevel(pkg, property.name.capitalize()).type
     }
+
+    private object BuiltInType : TypeAtPackage("kotlin")
+    private object CollectionClassifier : ClassifierAtPackage("kotlin.collections")
+
+    private object InteropClassifier : ClassifierAtPackage("kotlinx.cinterop")
+    private object InteropType : TypeAtPackage("kotlinx.cinterop")
 }
 
 abstract class KotlinFile(
@@ -306,4 +314,8 @@ abstract class KotlinFile(
         }
     }.sorted()
 
+}
+
+data class KotlinParameter(val name: String, val type: KotlinType) {
+    fun render(scope: KotlinScope) = "${name.asSimpleName()}: ${type.render(scope)}"
 }

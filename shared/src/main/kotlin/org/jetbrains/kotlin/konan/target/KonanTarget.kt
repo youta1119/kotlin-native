@@ -19,14 +19,15 @@ package org.jetbrains.kotlin.konan.target
 import org.jetbrains.kotlin.konan.target.KonanTarget.*
 import org.jetbrains.kotlin.konan.util.Named
 
-enum class Family(val exeSuffix:String, val dynamicPrefix: String, val dynamicSuffix: String) {
-    OSX     ("kexe", "lib", "dylib"),
-    IOS     ("kexe", "lib", "dylib"),
-    LINUX   ("kexe", "lib", "so"   ),
-    MINGW   ("exe" , ""   , "dll"  ),
-    ANDROID ("so"  , "lib", "so"   ),
-    WASM    ("wasm", ""   , "wasm" ),
-    ZEPHYR  ("o"   , "lib", "a"    )
+enum class Family(val exeSuffix:String, val dynamicPrefix: String, val dynamicSuffix: String,
+                  val staticPrefix: String, val staticSuffix: String) {
+    OSX     ("kexe", "lib", "dylib", "lib", "a"),
+    IOS     ("kexe", "lib", "dylib", "lib", "a"),
+    LINUX   ("kexe", "lib", "so"   , "lib", "a"),
+    MINGW   ("exe" , ""   , "dll"  , "lib", "a"),
+    ANDROID ("so"  , "lib", "so"   , "lib", "a"),
+    WASM    ("wasm", ""   , "wasm" , "",    "wasm"),
+    ZEPHYR  ("o"   , "lib", "a"    , "lib", "a")
 }
 
 enum class Architecture(val bitness: Int) {
@@ -53,6 +54,8 @@ sealed class KonanTarget(override val name: String, val family: Family, val arch
 
     // Tunable targets
     class ZEPHYR(val subName: String, val genericName: String = "zephyr") : KonanTarget("${genericName}_$subName", Family.ZEPHYR, Architecture.ARM32)
+
+    override fun toString() = name
 }
 
 fun hostTargetSuffix(host: KonanTarget, target: KonanTarget) =
@@ -65,6 +68,10 @@ enum class CompilerOutputKind {
     DYNAMIC {
         override fun suffix(target: KonanTarget?) = ".${target!!.family.dynamicSuffix}"
         override fun prefix(target: KonanTarget?) = "${target!!.family.dynamicPrefix}"
+    },
+    STATIC {
+        override fun suffix(target: KonanTarget?) = ".${target!!.family.staticSuffix}"
+        override fun prefix(target: KonanTarget?) = "${target!!.family.staticPrefix}"
     },
     FRAMEWORK {
         override fun suffix(target: KonanTarget?): String = ".framework"

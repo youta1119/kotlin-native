@@ -25,13 +25,15 @@ inline fun <R> autoreleasepool(block: () -> R): R {
     }
 }
 
-// FIXME: implement a checked cast instead.
-fun <T : ObjCObject> ObjCObject.reinterpret() = this.uncheckedCast<T>()
+@Deprecated("Use plain Kotlin cast", ReplaceWith("this as T"), DeprecationLevel.WARNING)
+fun <T : ObjCObject> ObjCObject.reinterpret() = @Suppress("DEPRECATION") this.uncheckedCast<T>()
 
 // TODO: null checks
-var <T : ObjCObject?> ObjCObjectVar<T>.value: T
-    get() = interpretObjCPointerOrNull<T>(nativeMemUtils.getNativePtr(this)).uncheckedCast<T>()
-    set(value) = nativeMemUtils.putNativePtr(this, value.rawPtr())
+var <T> ObjCObjectVar<T>.value: T
+    @Suppress("DEPRECATION") get() =
+        interpretObjCPointerOrNull<T>(nativeMemUtils.getNativePtr(this)).uncheckedCast<T>()
+
+    set(value) = nativeMemUtils.putNativePtr(this, value.objcPtr())
 
 /**
  * Makes Kotlin method in Objective-C class accessible through Objective-C dispatch

@@ -108,13 +108,18 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable): Sym
 
     val interopAllocObjCObject = symbolTable.referenceSimpleFunction(context.interopBuiltIns.allocObjCObject)
 
-    val interopGetObjCClass = symbolTable.referenceSimpleFunction(context.interopBuiltIns.getObjCClass)
+    val interopObjCRelease = symbolTable.referenceSimpleFunction(
+            context.interopBuiltIns.packageScope
+                    .getContributedFunctions(Name.identifier("objc_release"), NoLookupLocation.FROM_BACKEND)
+                    .single()
+    )
 
-    val interopObjCObjectInitFromPtr =
-            symbolTable.referenceSimpleFunction(context.interopBuiltIns.objCObjectInitFromPtr)
+    val interopGetObjCClass = symbolTable.referenceSimpleFunction(context.interopBuiltIns.getObjCClass)
 
     val interopObjCObjectSuperInitCheck =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.objCObjectSuperInitCheck)
+
+    val interopObjCObjectInitBy = symbolTable.referenceSimpleFunction(context.interopBuiltIns.objCObjectInitBy)
 
     val interopObjCObjectRawValueGetter =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.objCObjectRawPtr)
@@ -131,12 +136,6 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable): Sym
 
     val interopCreateNSStringFromKString =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.CreateNSStringFromKString)
-
-    val objCPointerHolder = symbolTable.referenceClass(context.interopBuiltIns.objCPointerHolder)
-    val objCPointerHolderValueGetter =
-            symbolTable.referenceSimpleFunction(context.interopBuiltIns.objCPointerHolderValue.getter!!)
-
-    val allocObjCObject = symbolTable.referenceSimpleFunction(context.interopBuiltIns.allocObjCObject)
 
     val objCExportTrapOnUndeclaredException =
             symbolTable.referenceSimpleFunction(context.builtIns.konanInternal.getContributedFunctions(

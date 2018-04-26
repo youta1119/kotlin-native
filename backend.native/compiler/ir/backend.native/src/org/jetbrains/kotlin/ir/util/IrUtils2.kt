@@ -17,17 +17,17 @@
 package org.jetbrains.kotlin.ir.util
 
 import org.jetbrains.kotlin.backend.common.CommonBackendContext
+import org.jetbrains.kotlin.backend.konan.KonanBackendContext
+import org.jetbrains.kotlin.backend.konan.KonanCompilationException
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.descriptors.annotations.Annotations
 import org.jetbrains.kotlin.descriptors.impl.PropertyDescriptorImpl
 import org.jetbrains.kotlin.ir.IrElement
+import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.*
-import org.jetbrains.kotlin.ir.expressions.IrConst
-import org.jetbrains.kotlin.ir.expressions.IrConstKind
-import org.jetbrains.kotlin.ir.expressions.IrExpression
-import org.jetbrains.kotlin.ir.expressions.IrTypeOperator
+import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.IrExpressionBodyImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrTypeOperatorCallImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
@@ -36,6 +36,7 @@ import org.jetbrains.kotlin.resolve.OverridingStrategy
 import org.jetbrains.kotlin.resolve.OverridingUtil
 import org.jetbrains.kotlin.resolve.descriptorUtil.builtIns
 import org.jetbrains.kotlin.types.KotlinType
+import org.jetbrains.kotlin.types.TypeUtils
 import java.lang.reflect.Proxy
 
 //TODO: delete file on next kotlin dependency update
@@ -358,7 +359,7 @@ tailrec fun IrDeclaration.getContainingFile(): IrFile? {
     }
 }
 
-fun CommonBackendContext.report(declaration: IrDeclaration, message: String, isError: Boolean) {
+internal fun KonanBackendContext.report(declaration: IrDeclaration, message: String, isError: Boolean) {
     val irFile = declaration.getContainingFile()
     this.report(
             declaration,
@@ -371,4 +372,21 @@ fun CommonBackendContext.report(declaration: IrDeclaration, message: String, isE
             },
             isError
     )
+    if (isError) throw KonanCompilationException()
+}
+
+fun IrBuilderWithScope.irForceNotNull(expression: IrExpression): IrExpression {
+    if (!TypeUtils.isNullableType(expression.type)) {
+        return expression
+    }
+
+    return irBlock {
+        val temporary = irTemporaryVar(expression)
+        +irIfNull(
+                expression.type,
+                subject = irGet(temporary.symbol),
+                thenPart = irThrowNpe(IrStatementOrigin.EXCLEXCL),
+                elsePart = irGet(temporary.symbol)
+        )
+    }
 }

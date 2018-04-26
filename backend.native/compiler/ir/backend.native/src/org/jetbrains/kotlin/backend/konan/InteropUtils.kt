@@ -69,7 +69,7 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
         val objCNamesProtocols = objCNames.child(Name.identifier("protocols"))
     }
 
-    private val packageScope = builtIns.builtInsModule.getPackage(FqNames.packageName).memberScope
+    val packageScope = builtIns.builtInsModule.getPackage(FqNames.packageName).memberScope
 
     val getPointerSize = packageScope.getContributedFunctions("getPointerSize").single()
 
@@ -161,21 +161,14 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
     }.toMap()
 
     val objCObject = packageScope.getContributedClass("ObjCObject")
-    val objCPointerHolder = packageScope.getContributedClass("ObjCPointerHolder")
 
-    val objCPointerHolderValue = objCPointerHolder.unsubstitutedMemberScope
-            .getContributedDescriptors().filterIsInstance<PropertyDescriptor>().single()
-
-    val objCObjectInitFromPtr = packageScope.getContributedFunctions("initFromPtr").single()
+    val objCObjectBase = packageScope.getContributedClass("ObjCObjectBase")
 
     val allocObjCObject = packageScope.getContributedFunctions("allocObjCObject").single()
 
     val getObjCClass = packageScope.getContributedFunctions("getObjCClass").single()
 
-    val objCObjectRawPtr = packageScope.getContributedFunctions("rawPtr").single {
-        val extensionReceiverType = it.extensionReceiverParameter?.type
-        extensionReceiverType != null && TypeUtils.getClassDescriptor(extensionReceiverType) == objCObject
-    }
+    val objCObjectRawPtr = packageScope.getContributedFunctions("objcPtr").single()
 
     val getObjCReceiverOrSuper = packageScope.getContributedFunctions("getReceiverOrSuper").single()
 
@@ -191,6 +184,8 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
     val objCAction = packageScope.getContributedClass("ObjCAction")
 
     val objCOutlet = packageScope.getContributedClass("ObjCOutlet")
+
+    val objCOverrideInit = objCObjectBase.unsubstitutedMemberScope.getContributedClass("OverrideInit")
 
     val objCMethodImp = packageScope.getContributedClass("ObjCMethodImp")
 

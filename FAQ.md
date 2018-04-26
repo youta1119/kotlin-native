@@ -19,3 +19,17 @@ It will produce platform-specific shared object (.so on Linux, .dylib on macOS a
 C language header, allowing to use all public APIs available in your Kotlin/Native program from C code.
 See `samples/python_extension` as an example of using such shared object to provide a bridge between Python and
 Kotlin/Native.
+
+Q: How do I run Kotlin/Native behind corporate proxy?
+
+A: As Kotlin/Native need to download platform specific toolchain, you need to specify
+`-Dhttp.proxyHost=xxx -Dhttp.proxyPort=xxx` as compiler's or `gradlew` arguments,
+or set it via `JAVA_OPTS` environment variable.
+
+Q: How do I specify custom Objective-C prefix/name for my Kotlin framework?
+A: Use `-module_name` compiler option or matching Gradle DSL statement, i.e.
+```
+framework("MyCustomFramework") {
+    extraOpts '-module_name', 'TheName'
+}
+```

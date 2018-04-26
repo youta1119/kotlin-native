@@ -73,7 +73,7 @@ private val PrimitiveType.bridgedType: BridgedType
         }
     }
 
-private val ObjCPointer.isNullable: Boolean
+internal val ObjCPointer.isNullable: Boolean
     get() = this.nullability != ObjCPointer.Nullability.NonNull
 
 /**
@@ -192,7 +192,7 @@ sealed class TypeInfo {
     }
 
     class ObjCPointerInfo(val kotlinType: KotlinType, val type: ObjCPointer) : TypeInfo() {
-        override fun argToBridged(expr: String) = "$expr.rawPtr()"
+        override fun argToBridged(expr: String) = "$expr.objcPtr()"
 
         override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
                 "interpretObjCPointerOrNull<${kotlinType.render(scope)}>($expr)" +
@@ -202,20 +202,6 @@ sealed class TypeInfo {
             get() = BridgedType.OBJC_POINTER
 
         override fun constructPointedType(valueType: KotlinType) = KotlinTypes.objCObjectVar.typeWith(valueType)
-    }
-
-    class NSString(val type: ObjCPointer) : TypeInfo() {
-        override fun argToBridged(expr: String) = "CreateNSStringFromKString($expr)"
-
-        override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
-                "CreateKStringFromNSString($expr)" + if (type.isNullable) "" else "!!"
-
-        override val bridgedType: BridgedType
-            get() = BridgedType.OBJC_POINTER
-
-        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType {
-            return KotlinTypes.objCStringVarOf.typeWith(valueType)
-        }
     }
 
     class ObjCBlockPointerInfo(val kotlinType: KotlinFunctionType, val type: ObjCBlockPointer) : TypeInfo() {
@@ -470,22 +456,46 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
     else -> TODO(type.toString())
 }
 
+internal tailrec fun ObjCClass.isNSStringOrSubclass(): Boolean = when (this.name) {
+    "NSMutableString", // fast path and handling for forward declarations.
+    "NSString" -> true
+    else -> {
+        val baseClass = this.baseClass
+        if (baseClass != null) {
+            baseClass.isNSStringOrSubclass()
+        } else {
+            false
+        }
+    }
+}
+
+internal fun ObjCClass.isNSStringSubclass(): Boolean = this.baseClass?.isNSStringOrSubclass() == true
+
 private fun objCPointerMirror(declarationMapper: DeclarationMapper, type: ObjCPointer): TypeMirror.ByValue {
-    if (type is ObjCObjectPointer && type.def.name == "NSString") {
-        val info = TypeInfo.NSString(type)
-        return objCMirror(KotlinTypes.string, info, type.isNullable)
+    if (type is ObjCObjectPointer && type.def.isNSStringOrSubclass()) {
+        val valueType = KotlinTypes.string
+        return objCMirror(valueType, TypeInfo.ObjCPointerInfo(valueType, type), type.isNullable)
     }
 
-    val clazz = when (type) {
-        is ObjCIdType -> type.protocols.firstOrNull()?.let { declarationMapper.getKotlinClassFor(it) }
-                ?: KotlinTypes.objCObject
-        is ObjCClassPointer -> KotlinTypes.objCClass
-        is ObjCObjectPointer -> declarationMapper.getKotlinClassFor(type.def)
+    val valueType = when (type) {
+        is ObjCIdType -> {
+            type.protocols.firstOrNull()?.let { declarationMapper.getKotlinClassFor(it) }?.type
+                    ?: KotlinTypes.any
+        }
+        is ObjCClassPointer -> KotlinTypes.objCClass.type
+        is ObjCObjectPointer -> {
+            when (type.def.name) {
+                "NSArray" -> KotlinTypes.list.typeWith(StarProjection)
+                "NSMutableArray" -> KotlinTypes.mutableList.typeWith(KotlinTypes.any.makeNullable())
+                "NSSet" -> KotlinTypes.set.typeWith(StarProjection)
+                "NSDictionary" -> KotlinTypes.map.typeWith(KotlinTypes.any.makeNullable(), StarProjection)
+                else -> declarationMapper.getKotlinClassFor(type.def).type
+            }
+        }
         is ObjCInstanceType -> TODO(type.toString()) // Must have already been handled.
         is ObjCBlockPointer -> return objCBlockPointerMirror(declarationMapper, type)
     }
 
-    val valueType = clazz.type
     return objCMirror(valueType, TypeInfo.ObjCPointerInfo(valueType, type), type.isNullable)
 }
 

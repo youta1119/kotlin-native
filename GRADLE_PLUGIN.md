@@ -22,13 +22,12 @@ You may use the Gradle plugin to build _Kotlin/Native_ projects. To use it you n
 
     apply plugin: 'konan'
 
-The plugin downloads the compiler during its first run. You may specify a version of the compiler using `konan.version`
-project property:
-
-    konan.version=0.3
+The Kotlin/Native plugin depends on `org.jetbrains.kotlin:kotlin-gradle-plugin`. So if a build contains both these
+plugins as buildscript dependencies, it's recommended to **declare them in the same `build.gradle`** to avoid issues with
+plugin classpath.
 
 If you already downloaded the compiler manually you may specify the path to its root directory using `konan.home`
-project property (e.g. in `gradle.properties`). Note: the plugin ignores the `konan.version` property in this case.
+project property (e.g. in `gradle.properties`).
 
     konan.home=/home/user/kotlin-native-0.5
 
@@ -329,7 +328,9 @@ The plugin also edits the default `build` and `clean` tasks so that the first on
 Kotlin/Native supports building artifacts to be used by other native languages. There are two types of such artifacts:
 Objective-C framework and dynamic library.
 
-* **Dynamic library.** A dynamic library may be built using the `dynamic` artifact block. This block contains the same
+### Dynamic library
+
+A dynamic library may be built using the `dynamic` artifact block. This block contains the same
 options as other ones (except `interop`) allowing one to specify source files, compiler options and libraries used.
 Each task building a dynamic library produces two files: the library itself (a `*.so`/`*.dylib`/`*.dll` file depending
 on the target platform) and a C language header. Both of them may be accessed via properties of a building task
@@ -346,7 +347,9 @@ on the target platform) and a C language header. Both of them may be accessed vi
     ```
 Using a dynamic library is shown in the [python extension sample](samples/python_extension).
     
-* **Framework.** An Objective-C framework can be built using the `framework` artifact block. This block contains the
+### Framework
+
+An Objective-C framework can be built using the `framework` artifact block. This block contains the
 same options as other ones. One may access the framework built using `artifact` property of the building task
 (see the [**Tasks**](#Tasks) section). Unlike other artifacts this property points to a directory instead of a regular file.
     

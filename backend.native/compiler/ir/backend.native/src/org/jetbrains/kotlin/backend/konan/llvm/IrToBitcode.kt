@@ -87,27 +87,38 @@ internal fun emitLLVM(context: Context) {
     }
 
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    var devirtualizationAnalysisResult: Map<DataFlowIR.Node.VirtualCall, Devirtualization.DevirtualizedCallSite>? = null
+    var devirtualizationAnalysisResult: Devirtualization.AnalysisResult? = null
     phaser.phase(KonanPhase.DEVIRTUALIZATION) {
         devirtualizationAnalysisResult = Devirtualization.run(irModule, context, moduleDFG!!, externalModulesDFG!!)
 
         val privateFunctions = moduleDFG!!.symbolTable.getPrivateFunctionsTableForExport()
-
-        codegenVisitor.codegen.staticData.placeGlobalConstArray(irModule.descriptor.privateFunctionsTableSymbolName, int8TypePtr,
-                privateFunctions.map { constPointer(codegenVisitor.codegen.llvmFunction(it)).bitcast(int8TypePtr) },
-                isExported = true
-        )
+        privateFunctions.forEachIndexed { index, it ->
+            val function = codegenVisitor.codegen.llvmFunction(it)
+            LLVMAddAlias(
+                    context.llvmModule,
+                    function.type,
+                    function,
+                    irModule.descriptor.privateFunctionSymbolName(index)
+            )!!
+        }
+        context.privateFunctions = privateFunctions
 
         val privateClasses = moduleDFG!!.symbolTable.getPrivateClassesTableForExport()
 
-        codegenVisitor.codegen.staticData.placeGlobalConstArray(irModule.descriptor.privateClassesTableSymbolName, int8TypePtr,
-                privateClasses.map { constPointer(codegenVisitor.codegen.typeInfoValue(it)).bitcast(int8TypePtr) },
-                isExported = true
-        )
+        privateClasses.forEachIndexed { index, it ->
+            val typeInfoPtr = codegenVisitor.codegen.typeInfoValue(it)
+            LLVMAddAlias(
+                    context.llvmModule,
+                    typeInfoPtr.type,
+                    typeInfoPtr,
+                    irModule.descriptor.privateClassSymbolName(index)
+            )!!
+        }
+        context.privateClasses = privateClasses
     }
 
     phaser.phase(KonanPhase.ESCAPE_ANALYSIS) {
-        val callGraph = CallGraphBuilder(context, moduleDFG!!, externalModulesDFG!!).build()
+        val callGraph = CallGraphBuilder(context, moduleDFG!!, externalModulesDFG!!, devirtualizationAnalysisResult, false).build()
         EscapeAnalysis.computeLifetimes(moduleDFG!!, externalModulesDFG!!, callGraph, lifetimes)
     }
 
@@ -340,13 +351,15 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         declaration.acceptChildrenVoid(this)
 
         // Note: it is here because it also generates some bitcode.
-        ObjCExport(context).produceObjCFramework()
+        ObjCExport(codegen).produce()
+
+        codegen.objCDataGenerator?.finishModule()
 
         appendLlvmUsed("llvm.used", context.llvm.usedFunctions + context.llvm.usedGlobals)
         appendLlvmUsed("llvm.compiler.used", context.llvm.compilerUsedGlobals)
         appendStaticInitializers()
         appendEntryPointSelector(context.ir.symbols.entryPoint?.owner)
-        if (context.isDynamicLibrary) {
+        if (context.isNativeLibrary) {
             appendCAdapters()
         }
 
@@ -501,7 +514,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             return
         }
 
-        if (declaration.descriptor.getObjCInitMethod() != null) {
+        if (declaration.isObjCConstructor()) {
             // Do not generate any ctors for external Objective-C classes.
             return
         }
@@ -1247,8 +1260,24 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         assert(!KotlinBuiltIns.isPrimitiveType(dstDescriptor.defaultType) &&
                 !KotlinBuiltIns.isPrimitiveType(value.argument.type))
 
-        val dstTypeInfo   = codegen.typeInfoValue(dstDescriptor)                       // Get TypeInfo for dst type.
         val srcArg        = evaluateExpression(value.argument)                         // Evaluate src expression.
+
+        if (dstDescriptor.defaultType.isObjCObjectType()) {
+            with(functionGenerationContext) {
+                ifThen(not(genInstanceOf(srcArg, dstDescriptor))) {
+                    callDirect(
+                            context.ir.symbols.ThrowTypeCastException.owner,
+                            emptyList(),
+                            Lifetime.GLOBAL
+                    )
+                }
+            }
+            return srcArg
+        }
+        // Note: the code above would actually work for any classes.
+        // However, the code generated below is shorter. Consider it to be a specialization.
+
+        val dstTypeInfo   = codegen.typeInfoValue(dstDescriptor)                       // Get TypeInfo for dst type.
         val srcObjInfoPtr = functionGenerationContext.bitcast(codegen.kObjHeaderPtr, srcArg)             // Cast src to ObjInfoPtr.
         val args          = listOf(srcObjInfoPtr, dstTypeInfo)                         // Create arg list.
         call(context.llvm.checkInstanceFunction, args)                                 // Check if dst is subclass of src.
@@ -1295,6 +1324,10 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     //-------------------------------------------------------------------------//
 
     private fun genInstanceOf(obj: LLVMValueRef, dstClass: IrClass): LLVMValueRef {
+        if (dstClass.defaultType.isObjCObjectType()) {
+            return genInstanceOfObjC(obj, dstClass)
+        }
+
         val dstTypeInfo   = codegen.typeInfoValue(dstClass)                            // Get TypeInfo for dst type.
         val srcObjInfoPtr = functionGenerationContext.bitcast(codegen.kObjHeaderPtr, obj)                // Cast src to ObjInfoPtr.
         val args          = listOf(srcObjInfoPtr, dstTypeInfo)                         // Create arg list.
@@ -1303,11 +1336,57 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         return LLVMBuildTrunc(functionGenerationContext.builder, result, kInt1, "")!!             // Truncate result to boolean
     }
 
+    private fun genInstanceOfObjC(obj: LLVMValueRef, dstClass: IrClass): LLVMValueRef {
+        val objCObject = callDirect(
+                context.ir.symbols.interopObjCObjectRawValueGetter.owner,
+                listOf(obj),
+                Lifetime.IRRELEVANT
+        )
+
+        return if (dstClass.isObjCClass()) {
+            if (dstClass.isInterface) {
+                val isMeta = if (dstClass.isObjCMetaClass()) Int8(1) else Int8(0)
+                call(
+                        context.llvm.Kotlin_Interop_DoesObjectConformToProtocol,
+                        listOf(
+                                objCObject,
+                                genGetObjCProtocol(dstClass),
+                                isMeta.llvm
+                        )
+                )
+            } else {
+                call(
+                        context.llvm.Kotlin_Interop_IsObjectKindOfClass,
+                        listOf(objCObject, genGetObjCClass(dstClass))
+                )
+            }.let {
+                functionGenerationContext.icmpNe(it, Int8(0).llvm)
+            }
+
+
+        } else {
+            // e.g. ObjCObject, ObjCObjectBase etc.
+            if (dstClass.isObjCMetaClass()) {
+                val isClass = context.llvm.externalFunction(
+                        "object_isClass",
+                        functionType(int8Type, false, int8TypePtr),
+                        context.standardLlvmSymbolsOrigin
+                )
+
+                call(isClass, listOf(objCObject)).let {
+                    functionGenerationContext.icmpNe(it, Int8(0).llvm)
+                }
+            } else {
+                kTrue
+            }
+        }
+    }
+
     //-------------------------------------------------------------------------//
 
     private fun evaluateNotInstanceOf(value: IrTypeOperatorCall): LLVMValueRef {
         val instanceOfResult = evaluateInstanceOf(value)
-        return LLVMBuildNot(functionGenerationContext.builder, instanceOfResult, "")!!
+        return functionGenerationContext.not(instanceOfResult)
     }
 
     //-------------------------------------------------------------------------//
@@ -1399,7 +1478,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         return if (classDescriptor.isObjCClass()) {
             assert(classDescriptor.isKotlinObjCClass())
 
-            val objCPtr = callDirect(context.ir.symbols.objCPointerHolderValueGetter.owner,
+            val objCPtr = callDirect(context.ir.symbols.interopObjCObjectRawValueGetter.owner,
                     listOf(objectPtr), Lifetime.IRRELEVANT)
 
             val objCDeclarations = context.llvmDeclarations.forClass(classDescriptor).objCDeclarations!!
@@ -1930,36 +2009,36 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     //-------------------------------------------------------------------------//
 
     private fun evaluatePrivateFunctionCall(callee: IrPrivateFunctionCall, args: List<LLVMValueRef>, resultLifetime: Lifetime): LLVMValueRef {
-        val functionsListName = callee.moduleDescriptor.privateFunctionsTableSymbolName
-        // LLVM inlines access to this global array (with -opt option on).
-        val functionsList =
-                if (callee.moduleDescriptor == context.irModule!!.descriptor)
-                    LLVMGetNamedGlobal(context.llvmModule, functionsListName)
-                else
-                    codegen.importGlobal(functionsListName, LLVMArrayType(int8TypePtr, callee.totalFunctions)!!, callee.moduleDescriptor.llvmSymbolOrigin)
-        val functionIndex    = Int32(callee.functionIndex).llvm
-        val functionPlacePtr = LLVMBuildGEP(functionGenerationContext.builder, functionsList, cValuesOf(kImmZero, functionIndex), 2, "")!!
-        val functionPtr      = functionGenerationContext.load(functionPlacePtr)
-
         val target = callee.symbol.owner as IrFunction
-        val functionPtrType  = pointerType(codegen.getLlvmFunctionType(target))
-        val function         = functionGenerationContext.bitcast(functionPtrType, functionPtr)
+
+        val functionIndex = callee.functionIndex
+        val function = if (callee.moduleDescriptor == context.irModule!!.descriptor) {
+            codegen.llvmFunction(context.privateFunctions[functionIndex])
+        } else {
+            context.llvm.externalFunction(
+                    callee.moduleDescriptor.privateFunctionSymbolName(functionIndex),
+                    codegen.getLlvmFunctionType(target),
+                    callee.moduleDescriptor.llvmSymbolOrigin
+
+            )
+        }
         return call(target, function, args, resultLifetime)
     }
 
     //-------------------------------------------------------------------------//
 
     private fun evaluatePrivateClassReference(classReference: IrPrivateClassReference): LLVMValueRef {
-        val classesListName = classReference.moduleDescriptor.privateClassesTableSymbolName
-        // LLVM inlines access to this global array (with -opt option on).
-        val functionsList =
-                if (classReference.moduleDescriptor == context.irModule!!.descriptor)
-                    LLVMGetNamedGlobal(context.llvmModule, classesListName)
-                else
-                    codegen.importGlobal(classesListName, LLVMArrayType(int8TypePtr, classReference.totalClasses)!!, classReference.moduleDescriptor.llvmSymbolOrigin)
-        val classIndex    = Int32(classReference.classIndex).llvm
-        val classPlacePtr = LLVMBuildGEP(functionGenerationContext.builder, functionsList, cValuesOf(kImmZero, classIndex), 2, "")!!
-        return functionGenerationContext.load(classPlacePtr)
+        val classIndex = classReference.classIndex
+        val typeInfoPtr = if (classReference.moduleDescriptor == context.irModule!!.descriptor) {
+            codegen.typeInfoValue(context.privateClasses[classIndex])
+        } else {
+            codegen.importGlobal(
+                    classReference.moduleDescriptor.privateClassSymbolName(classIndex),
+                    codegen.kTypeInfo,
+                    classReference.moduleDescriptor.llvmSymbolOrigin
+            )
+        }
+        return functionGenerationContext.bitcast(int8TypePtr, typeInfoPtr)
     }
 
     //-------------------------------------------------------------------------//
@@ -1992,9 +2071,19 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 assert(args.isEmpty())
                 functionGenerationContext.allocArray(codegen.typeInfoValue(constructedClass), count = kImmZero,
                         lifetime = resultLifetime(callee))
-            } else if (constructedClass.isKotlinObjCClass()) {
-                callDirect(context.ir.symbols.allocObjCObject.owner, listOf(genGetObjCClass(constructedClass)),
-                        resultLifetime(callee))
+            } else if (constructedClass.isObjCClass()) {
+                assert(constructedClass.isKotlinObjCClass()) // Calls to other ObjC class constructors must be lowered.
+                val symbols = context.ir.symbols
+                val rawPtr = callDirect(
+                        symbols.interopAllocObjCObject.owner,
+                        listOf(genGetObjCClass(constructedClass)),
+                        Lifetime.IRRELEVANT
+                )
+
+                callDirect(symbols.interopInterpretObjCPointer.owner, listOf(rawPtr), resultLifetime(callee)).also {
+                    // Balance pointer retained by alloc:
+                    callDirect(symbols.interopObjCRelease.owner, listOf(rawPtr), Lifetime.IRRELEVANT)
+                }
             } else {
                 functionGenerationContext.allocInstance(constructedClass, resultLifetime(callee))
             }
@@ -2066,10 +2155,6 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 }
             }
 
-            interop.objCObjectInitFromPtr -> {
-                genObjCObjectInitFromPtr(args)
-            }
-
             interop.getObjCReceiverOrSuper -> {
                 genGetObjCReceiverOrSuper(args)
             }
@@ -2120,15 +2205,12 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                 val length = varargExpression.elements.size
                 // TODO: store length in `vararg` itself when more abstract types will be used for values.
 
-                // `elementType` is type argument of function return type:
-                val elementType = callee.descriptor.returnType!!.arguments.single()
-
                 val array = constPointer(vararg)
                 // Note: dirty hack here: `vararg` has type `Array<out E>`, but `createArrayList` expects `Array<E>`;
                 // however `vararg` is immutable, and in current implementation it has type `Array<E>`,
                 // so let's ignore this mismatch currently for simplicity.
 
-                return context.llvm.staticData.createArrayList(elementType, array, length).llvm
+                return context.llvm.staticData.createArrayList(array, length).llvm
             }
 
             else -> TODO(callee.descriptor.original.toString())
@@ -2226,36 +2308,24 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     }
 
     private fun genGetObjCClass(classDescriptor: ClassDescriptor): LLVMValueRef {
-        assert(!classDescriptor.isInterface)
+        return functionGenerationContext.getObjCClass(classDescriptor, currentCodeContext.exceptionHandler)
+    }
 
-        return if (classDescriptor.isExternalObjCClass()) {
-            context.llvm.imports.add(classDescriptor.llvmSymbolOrigin)
+    private fun genGetObjCProtocol(irClass: IrClass): LLVMValueRef {
+        // Note: this function will return the same result for Obj-C protocol and corresponding meta-class.
 
-            val lookUpFunction = context.llvm.externalFunction("Kotlin_Interop_getObjCClass",
-                    functionType(int8TypePtr, false, int8TypePtr),
-                    origin = context.standardLlvmSymbolsOrigin
-            )
+        assert(irClass.isInterface)
+        assert(irClass.isExternalObjCClass())
 
-            call(lookUpFunction,
-                    listOf(codegen.staticData.cStringLiteral(classDescriptor.name.asString()).llvm))
-        } else {
-            val objCDeclarations = context.llvmDeclarations.forClass(classDescriptor).objCDeclarations!!
-            val classPointerGlobal = objCDeclarations.classPointerGlobal.llvmGlobal
-            val gen = functionGenerationContext
+        val annotation = irClass.annotations.findAnnotation(externalObjCClassFqName)!!
+        val protocolGetterName = annotation.getStringValue("protocolGetter")
+        val protocolGetter = context.llvm.externalFunction(
+                protocolGetterName,
+                functionType(int8TypePtr, false),
+                irClass.llvmSymbolOrigin
+        )
 
-            val storedClass = gen.load(classPointerGlobal)
-
-            val storedClassIsNotNull = gen.icmpNe(storedClass, kNullInt8Ptr)
-
-            return gen.ifThenElse(storedClassIsNotNull, storedClass) {
-                val newClass = call(context.llvm.createKotlinObjCClass,
-                        listOf(objCDeclarations.classInfoGlobal.llvmGlobal))
-
-                gen.store(newClass, classPointerGlobal)
-                newClass
-            }
-        }
-
+        return call(protocolGetter, emptyList())
     }
 
     private fun genGetObjCMessenger(args: List<LLVMValueRef>, isLU: Boolean): LLVMValueRef {
@@ -2300,11 +2370,6 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         )!!
 
         return gen.bitcast(int8TypePtr, messenger)
-    }
-
-    private fun genObjCObjectInitFromPtr(args: List<LLVMValueRef>): LLVMValueRef {
-        return callDirect(context.ir.symbols.objCPointerHolder.owner.constructors.single(),
-                args, Lifetime.IRRELEVANT)
     }
 
     private fun genGetObjCReceiverOrSuper(args: List<LLVMValueRef>): LLVMValueRef {

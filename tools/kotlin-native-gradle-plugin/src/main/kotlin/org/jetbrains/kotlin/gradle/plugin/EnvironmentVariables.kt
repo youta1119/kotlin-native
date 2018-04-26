@@ -23,7 +23,7 @@ import java.io.File
 /**
  *  The plugin allows an IDE to specify some building parameters. These parameters
  *  are passed to the plugin via environment variables. Two variables are supported:
- *      - CONFIGURATION_BUILD_DIR    - An absolute path to a destination directory for all compilation tasks.
+ *      - CONFIGURATION_BUILD_DIR    - A path to a destination directory for all compilation tasks.
  *                                     The IDE should take care about specifying different directories
  *                                     for different targets. This setting has less priority than
  *                                     an explicitly specified destination directory in the build script.
@@ -57,10 +57,10 @@ internal class EnvironmentVariablesUnused: EnvironmentVariables {
         get() = false
 }
 
-internal class EnvironmentVariablesImpl:  EnvironmentVariables {
+internal class EnvironmentVariablesImpl(val project: Project):  EnvironmentVariables {
     override val configurationBuildDir: File?
         get() = System.getenv("CONFIGURATION_BUILD_DIR")?.let {
-            File(it).apply { check(isAbsolute) { "A path passed using CONFIGURATION_BUILD_DIR should be absolute" } }
+            project.file(it)
         }
 
     override val debuggingSymbols: Boolean
@@ -70,12 +70,40 @@ internal class EnvironmentVariablesImpl:  EnvironmentVariables {
         get() = System.getenv("KONAN_ENABLE_OPTIMIZATIONS")?.toUpperCase() == "YES"
 }
 
+/**
+ * Due to https://github.com/gradle/gradle/issues/3468 we cannot use environment
+ * variables in Java 9. Until Gradle API for environment variables is provided
+ * we use project properties instead of them. TODO: Return to using env vars when the issue is fixed.
+ */
+internal class EnvironmentVariablesFromProperties(val project: Project): EnvironmentVariables {
+    override val configurationBuildDir: File?
+        get() = project.findProperty(ProjectProperty.KONAN_CONFIGURATION_BUILD_DIR)?.let {
+            project.file(it)
+        }
+
+    override val debuggingSymbols: Boolean
+        get() = project.findProperty(ProjectProperty.KONAN_DEBUGGING_SYMBOLS)?.toString()?.toUpperCase().let {
+            it == "YES" || it == "TRUE"
+        }
+
+    override val enableOptimizations: Boolean
+        get() = project.findProperty(ProjectProperty.KONAN_OPTIMIZATIONS_ENABLE)?.toString()?.toUpperCase().let {
+            it == "YES" || it == "TRUE"
+        }
+}
+
 internal val Project.useEnvironmentVariables: Boolean
     get() = findProperty(ProjectProperty.KONAN_USE_ENVIRONMENT_VARIABLES)?.toString()?.toBoolean() ?: false
 
+/*
+ TODO: Return to using env vars when the issue is fixed.
+ Take into account the useEnvironmentVariables property (and may be rename it) in the following way:
+
+ if (useEnvironmentVariables) {
+     EnvironmentVariablesImpl(project)
+ } else {
+     EnvironmentVariablesUnused()
+ }
+*/
 internal val Project.environmentVariables: EnvironmentVariables
-    get() = if (useEnvironmentVariables) {
-        EnvironmentVariablesImpl()
-    } else {
-        EnvironmentVariablesUnused()
-    }
+    get() = EnvironmentVariablesFromProperties(project)

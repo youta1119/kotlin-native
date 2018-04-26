@@ -24,6 +24,8 @@ import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.properties.*
 import org.jetbrains.kotlin.config.LanguageVersionSettings
 import org.jetbrains.kotlin.konan.target.KonanTarget
+import org.jetbrains.kotlin.konan.util.defaultTargetSubstitutions
+import org.jetbrains.kotlin.konan.util.substitute
 
 class LibraryReaderImpl(var libraryFile: File, val currentAbiVersion: Int,
     val target: KonanTarget? = null, override val isDefaultLibrary: Boolean = false)
@@ -39,7 +41,9 @@ class LibraryReaderImpl(var libraryFile: File, val currentAbiVersion: Int,
     private val reader = MetadataReaderImpl(inPlace)
 
     override val manifestProperties: Properties by lazy {
-        inPlace.manifestFile.loadProperties()
+        val properties = inPlace.manifestFile.loadProperties()
+        if (target != null) substitute(properties, defaultTargetSubstitutions(target))
+        properties
     }
 
     val abiVersion: String
@@ -60,10 +64,11 @@ class LibraryReaderImpl(var libraryFile: File, val currentAbiVersion: Int,
         get() = manifestProperties.propertyString("unique_name")!!
 
     override val bitcodePaths: List<String>
-        get() = (realFiles.kotlinDir.listFiles + realFiles.nativeDir.listFiles).map{it.absolutePath}
+        get() = (realFiles.kotlinDir.listFilesOrEmpty + realFiles.nativeDir.listFilesOrEmpty)
+                .map { it.absolutePath }
 
     override val includedPaths: List<String>
-        get() = (realFiles.includedDir.listFiles).map{it.absolutePath}
+        get() = (realFiles.includedDir.listFilesOrEmpty).map { it.absolutePath }
 
     override val linkerOpts: List<String>
         get() = manifestProperties.propertyList("linkerOpts", target!!.visibleName)

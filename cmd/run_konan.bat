@@ -72,7 +72,8 @@ set JAVA_OPTS=-ea ^
     -Xmx3G ^
     "-Djava.library.path=%NATIVE_LIB%" ^
     "-Dkonan.home=%_KONAN_HOME%" ^
-    -Dfile.encoding=UTF-8
+    -Dfile.encoding=UTF-8 ^
+    %JAVA_OPTS%
 
 set LIBCLANG_DISABLE_CRASH_RECOVERY=1
 
@@ -93,7 +94,8 @@ goto :eof
 :set_path
   rem libclang.dll is dynamically linked and thus requires correct PATH to be loaded.
   rem TODO: remove this hack.
-  set "PATH=%USERPROFILE%\.konan\dependencies\msys2-mingw-w64-x86_64-gcc-7.2.0-clang-llvm-5.0.0-windows-x86-64\bin;%PATH%"
+  if ("%KONAN_DATA_DIR%"=="") (set KONAN_DATA_DIR=%USERPROFILE%\.konan)
+  set "PATH=%KONAN_DATA_DIR%\dependencies\msys2-mingw-w64-x86_64-gcc-7.2.0-clang-llvm-5.0.0-windows-x86-64\bin;%PATH%"
 goto :eof
 
 :end

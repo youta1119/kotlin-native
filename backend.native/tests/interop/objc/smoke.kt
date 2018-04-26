@@ -1,5 +1,7 @@
 import kotlinx.cinterop.*
 import objcSmoke.*
+import konan.ref.*
+import kotlin.test.*
 
 fun main(args: Array<String>) {
     autoreleasepool {
@@ -8,6 +10,10 @@ fun main(args: Array<String>) {
 }
 
 fun run() {
+    testTypeOps()
+    testConversions()
+    testWeakRefs()
+
     println(
             getSupplier(
                     invoke1(42) { it * 2 }
@@ -44,7 +50,7 @@ fun run() {
     }
 
     // hashCode (directly):
-    if (foo.hashCode() == foo.hash().toInt()) {
+    if (foo.hashCode() == foo.hash().let { it.toInt() xor (it shr 32).toInt() }) {
         // toString (virtually):
         println(map.keys.map { it.toString() }.min() == foo.description())
     }
@@ -95,3 +101,85 @@ class MutablePairImpl(first: Int, second: Int) : NSObject(), MutablePairProtocol
         elements[index] -= sub
     }
 }
+
+fun testTypeOps() {
+    assertTrue(99.asAny() is NSNumber)
+    assertTrue(null.asAny() is NSNumber?)
+    assertFalse(null.asAny() is NSNumber)
+    assertFalse("".asAny() is NSNumber)
+    assertTrue("bar".asAny() is NSString)
+
+    assertTrue(Foo.asAny() is FooMeta)
+    assertTrue(Foo.asAny() is NSObjectMeta)
+    assertTrue(Foo.asAny() is NSObject)
+    assertFalse(Foo.asAny() is Foo)
+    assertTrue(NSString.asAny() is NSCopyingProtocolMeta)
+    assertFalse(NSString.asAny() is NSCopyingProtocol)
+    assertTrue(NSValue.asAny() is NSObjectProtocolMeta)
+    assertFalse(NSValue.asAny() is NSObjectProtocol) // Must be true, but not implemented properly yet.
+
+    assertEquals(3, ("foo" as NSString).length())
+    assertEquals(4, ((1..4).joinToString("") as NSString).length())
+    assertEquals(2, (listOf(0, 1) as NSArray).count())
+    assertEquals(42L, (42 as NSNumber).longLongValue())
+
+    assertFails { "bar" as NSNumber }
+    assertFails { 42 as NSArray }
+    assertFails { listOf(1) as NSString }
+    assertFails { NSObject() as Bar }
+    assertFails { NSObject() as NSValue }
+
+    MutablePairImpl(1, 2).asAny() as MutablePairProtocol
+    assertFails { MutablePairImpl(1, 2).asAny() as Foo }
+}
+
+fun testConversions() {
+    testMethodsOfAny(emptyList<Nothing>(), NSArray())
+    testMethodsOfAny(listOf(1, "foo"), nsArrayOf(1, "foo"))
+    testMethodsOfAny(42, NSNumber.numberWithInt(42), 17)
+}
+
+fun testMethodsOfAny(kotlinObject: Any, equalNsObject: NSObject, otherObject: Any = Any()) {
+    assertEquals(kotlinObject.hashCode(), equalNsObject.hashCode())
+    assertEquals(kotlinObject.toString(), equalNsObject.toString())
+    assertEquals(kotlinObject, equalNsObject)
+    assertEquals(equalNsObject, kotlinObject)
+    assertNotEquals(equalNsObject, otherObject)
+}
+
+fun testWeakRefs() {
+    testWeakReference({ NSObject.new()!! })
+
+    createAndAbandonWeakRef(NSObject())
+
+    testWeakReference({ NSArray.arrayWithArray(listOf(42)) as NSArray })
+}
+
+fun testWeakReference(block: () -> NSObject) {
+    val ref = autoreleasepool {
+        createAndTestWeakReference(block)
+    }
+
+    assertNull(ref.get())
+}
+
+fun createAndTestWeakReference(block: () -> NSObject): WeakReference<NSObject> {
+    val ref = createWeakReference(block)
+    assertNotNull(ref.get())
+    assertEquals(ref.get()!!.hash(), ref.get()!!.hash())
+    return ref
+}
+
+fun createWeakReference(block: () -> NSObject) = WeakReference(block())
+
+fun createAndAbandonWeakRef(obj: NSObject) {
+    WeakReference(obj)
+}
+
+fun nsArrayOf(vararg elements: Any): NSArray = NSMutableArray().apply {
+    elements.forEach {
+        this.addObject(it as ObjCObject)
+    }
+}
+
+fun Any?.asAny(): Any? = this
