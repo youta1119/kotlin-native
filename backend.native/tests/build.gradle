@@ -16,6 +16,7 @@
 
 import groovy.json.JsonOutput
 import org.jetbrains.kotlin.*
+import org.jetbrains.kotlin.konan.target.KonanTarget
 
 buildscript {
     repositories {
@@ -2612,6 +2613,9 @@ if (isMac()) {
                 args "-lobjc", '-fobjc-arc'
                 args '-fPIC', '-shared', '-o', "$buildDir/libobjcsmoke.dylib"
             }
+            if (project.target instanceof KonanTarget.IOS_X64) {
+                UtilsKt.codesign(project, "$buildDir/libobjcsmoke.dylib")
+            }
         }
     }
 }
@@ -2679,7 +2683,6 @@ if (isMac() && project.testTarget != 'wasm32') {
             }
         }
         swiftSources = ['framework/values/values.swift']
-        dependsOn "compileKonan${frameworkName}"
     }
 
     task testStdlibFramework(type: FrameworkTest) {
@@ -2695,7 +2698,6 @@ if (isMac() && project.testTarget != 'wasm32') {
             }
         }
         swiftSources = ['framework/stdlib/stdlib.swift']
-        dependsOn "compileKonan${frameworkName}"
     }
 }
 

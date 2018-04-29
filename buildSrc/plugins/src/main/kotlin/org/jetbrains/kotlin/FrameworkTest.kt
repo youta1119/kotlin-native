@@ -1,13 +1,14 @@
 package org.jetbrains.kotlin
 
+import groovy.lang.Closure
 import org.gradle.api.Action
 import org.gradle.api.DefaultTask
 import org.gradle.api.Project
+import org.gradle.api.Task
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.SourceSet
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.TaskAction
-import org.gradle.process.ExecSpec
 
 import org.jetbrains.kotlin.konan.target.*
 
@@ -36,19 +37,26 @@ open class FrameworkTest : DefaultTask() {
                 ?: throw RuntimeException("Empty sourceSet")
     }
 
+    override fun configure(config: Closure<*>): Task {
+        super.configure(config)
+        val target = project.testTarget().name
+
+        // set crossdist build dependency if custom konan.home wasn't set
+        if (!(project.property("useCustomDist") as Boolean)) {
+            setRootDependency("${target}CrossDist", "${target}CrossDistRuntime", "commonDistRuntime", "distCompiler")
+        }
+        check(::frameworkName.isInitialized, { "Framework name should be set" })
+        dependsOn(project.tasks.getByName("compileKonan$frameworkName"))
+        return this
+    }
+
+    private fun setRootDependency(vararg s: String) = s.forEach { dependsOn(project.rootProject.tasks.getByName(it)) }
+
     @TaskAction
     fun run() {
         val frameworkPath = "$testOutput/$frameworkName/${project.testTarget().name}"
 
-        // Sign framework
-        val (stdOut, stdErr, exitCode) = runProcess(executor = localExecutor, executable = "/usr/bin/codesign",
-                args = listOf("--verbose", "-s", "-", Paths.get(frameworkPath, "$frameworkName.framework").toString()))
-        check(exitCode == 0, { """
-            |Codesign failed with exitCode: $exitCode
-            |stdout: $stdOut
-            |stderr: $stdErr
-            """.trimMargin()
-        })
+        codesign(project, Paths.get(frameworkPath, "$frameworkName.framework").toString())
 
         // create a test provider and get main entry point
         val provider = Paths.get(testOutput, frameworkName, "provider.swift")
@@ -88,13 +96,6 @@ open class FrameworkTest : DefaultTask() {
         check(exitCode == 0, { "Execution failed with exit code: $exitCode "})
     }
 
-    private val localExecutor = { a: Action<in ExecSpec> -> project.exec(a) }
-
-    private fun Project.platformManager() = rootProject.findProperty("platformManager") as PlatformManager
-
-    private fun Project.testTarget() = platformManager()
-            .targetManager(project.findProperty("testTarget") as String?).target
-
     private fun swiftc(sources: List<String>, options: List<String>, output: Path) {
         val target = project.testTarget()
         val platform = project.platformManager().platform(target)
@@ -112,7 +113,7 @@ open class FrameworkTest : DefaultTask() {
         val args = listOf("-sdk", configs.absoluteTargetSysRoot, "-target", swiftTarget) +
                 options + "-o" + output.toString() + sources
 
-        val (stdOut, stdErr, exitCode) = runProcess(executor = localExecutor, executable = compiler, args = args)
+        val (stdOut, stdErr, exitCode) = runProcess(executor = localExecutor(project), executable = compiler, args = args)
 
         println("""
             |$compiler finished with exit code: $exitCode
