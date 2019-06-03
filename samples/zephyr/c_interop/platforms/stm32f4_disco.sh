@@ -1,16 +1,7 @@
-# Copyright 2010-2017 JetBrains s.r.o.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+# that can be found in the license/LICENSE.txt file.
 #
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This is board specific.
 
@@ -21,26 +12,25 @@ fi
 
 # TODO: we need a robust automated way to ask Zephyr for 
 # all these $ZEPHYR_BASE based paths and the proper defines.
-# TODO: The D flag in `-copt -Dxxx` sequence is interpreted to be a jvm property,
+# TODO: The D flag in `-compilerOpts -Dxxx` sequence is interpreted to be a jvm property,
 # so we workaround the using -Xclang.
 
 cinterop -def $DIR/c_interop/platforms/$BOARD.def \
         -pkg platform.zephyr.$BOARD \
-        -copt '-Xclang -DSTM32F407xx' \
-        -copt -I$ZEPHYR_BASE/kernel/include \
-        -copt -I$ZEPHYR_BASE/arch/arm/include \
-        -copt -I$ZEPHYR_BASE/arch/arm/soc/st_stm32/stm32f4 \
-        -copt -I$ZEPHYR_BASE/arch/arm/soc/st_stm32/stm32f4/include \
-        -copt -I$ZEPHYR_BASE/arch/arm/soc/st_stm32/include \
-        -copt -I$ZEPHYR_BASE/boards/arm/$BOARD \
-        -copt -I$ZEPHYR_BASE/include \
-        -copt -I$ZEPHYR_BASE/include/drivers \
-        -copt -I$ZEPHYR_BASE/ext/hal/cmsis/Include \
-        -copt -I$ZEPHYR_BASE/ext/hal/st/stm32cube/stm32f4xx/soc \
-        -copt -I$ZEPHYR_BASE/ext/hal/st/stm32cube/stm32f4xx/drivers/include \
-        -copt -I$ZEPHYR_BASE/ext/hal/st/stm32cube/stm32f4xx/drivers/include/Legacy \
-        -copt -I$ZEPHYR_BASE/drivers \
-        -copt -I$DIR/build/zephyr/include/generated \
-        -copt -I$DIR/build/zephyr/include/generated/syscalls \
+        -compilerOpts '-Xclang -DSTM32F407xx' \
+        -compilerOpts -I$ZEPHYR_BASE/kernel/include \
+        -compilerOpts -I$ZEPHYR_BASE/arch/arm/include \
+        -compilerOpts -I$ZEPHYR_BASE/soc/arm/st_stm32/stm32f4 \
+        -compilerOpts -I$ZEPHYR_BASE/soc/arm/st_stm32/common \
+        -compilerOpts -I$ZEPHYR_BASE/boards/arm/$BOARD \
+        -compilerOpts -I$ZEPHYR_BASE/include \
+        -compilerOpts -I$ZEPHYR_BASE/include/drivers \
+        -compilerOpts -I$ZEPHYR_BASE/ext/hal/cmsis/Include \
+        -compilerOpts -I$ZEPHYR_BASE/ext/hal/st/stm32cube/stm32f4xx/soc \
+        -compilerOpts -I$ZEPHYR_BASE/ext/hal/st/stm32cube/stm32f4xx/drivers/include \
+        -compilerOpts -I$ZEPHYR_BASE/ext/hal/st/stm32cube/stm32f4xx/drivers/include/Legacy \
+        -compilerOpts -I$ZEPHYR_BASE/drivers \
+        -compilerOpts -I$DIR/build/zephyr/include/generated \
+        -compilerOpts -I$DIR/build/zephyr/include/generated/syscalls \
         -o $DIR/c_interop/platforms/build/$BOARD \
         -target zephyr_$BOARD || exit 1

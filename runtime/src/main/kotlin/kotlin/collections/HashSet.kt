@@ -1,43 +1,35 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.collections
 
-class HashSet<K> internal constructor(
-        val backing: HashMap<K, *>
-) : MutableSet<K>, AbstractMutableCollection<K>(), konan.internal.KonanSet<K> {
+actual class HashSet<E> internal constructor(
+        val backing: HashMap<E, *>
+) : MutableSet<E>, AbstractMutableCollection<E>(), kotlin.native.internal.KonanSet<E> {
 
-    constructor() : this(HashMap<K, Nothing>())
+    actual constructor() : this(HashMap<E, Nothing>())
 
-    constructor(capacity: Int) : this(HashMap<K, Nothing>(capacity))
+    actual constructor(initialCapacity: Int) : this(HashMap<E, Nothing>(initialCapacity))
 
-    constructor(c: Collection<K>) : this(c.size) {
-        addAll(c)
+    actual constructor(elements: Collection<E>) : this(elements.size) {
+        addAll(elements)
     }
 
-    override val size: Int get() = backing.size
-    override fun isEmpty(): Boolean = backing.isEmpty()
-    override fun contains(element: K): Boolean = backing.containsKey(element)
-    override fun getElement(element: K): K? = backing.getKey(element)
-    override fun clear() = backing.clear()
-    override fun add(element: K): Boolean = backing.addKey(element) >= 0
-    override fun remove(element: K): Boolean = backing.removeKey(element) >= 0
-    override fun iterator(): MutableIterator<K> = backing.keysIterator()
+    // This implementation doesn't use a loadFactor
+    actual constructor(initialCapacity: Int, loadFactor: Float) : this(initialCapacity)
 
-    override fun containsAll(elements: Collection<K>): Boolean {
+    override actual val size: Int get() = backing.size
+    override actual fun isEmpty(): Boolean = backing.isEmpty()
+    override actual fun contains(element: E): Boolean = backing.containsKey(element)
+    override fun getElement(element: E): E? = backing.getKey(element)
+    override actual fun clear() = backing.clear()
+    override actual fun add(element: E): Boolean = backing.addKey(element) >= 0
+    override actual fun remove(element: E): Boolean = backing.removeKey(element) >= 0
+    override actual fun iterator(): MutableIterator<E> = backing.keysIterator()
+
+    override actual fun containsAll(elements: Collection<E>): Boolean {
         val it = elements.iterator()
         while (it.hasNext()) {
             if (!contains(it.next()))
@@ -46,7 +38,7 @@ class HashSet<K> internal constructor(
         return true
     }
 
-    override fun addAll(elements: Collection<K>): Boolean {
+    override actual fun addAll(elements: Collection<E>): Boolean {
         val it = elements.iterator()
         var updated = false
         while (it.hasNext()) {
@@ -60,7 +52,7 @@ class HashSet<K> internal constructor(
         return other === this ||
                 (other is Set<*>) &&
                         contentEquals(
-                                @Suppress("UNCHECKED_CAST") (other as Set<K>))
+                                @Suppress("UNCHECKED_CAST") (other as Set<E>))
     }
 
     override fun hashCode(): Int {
@@ -76,8 +68,8 @@ class HashSet<K> internal constructor(
 
     // ---------------------------- private ----------------------------
 
-    private fun contentEquals(other: Set<K>): Boolean = size == other.size && containsAll(other)
+    private fun contentEquals(other: Set<E>): Boolean = size == other.size && containsAll(other)
 }
 
 // This hash set keeps insertion order.
-typealias LinkedHashSet<V> = HashSet<V>
+actual typealias LinkedHashSet<V> = HashSet<V>

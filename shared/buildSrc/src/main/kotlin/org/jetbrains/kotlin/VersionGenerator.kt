@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2019 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package org.jetbrains.kotlin
 
 import groovy.lang.Closure
@@ -11,7 +16,7 @@ open class VersionGenerator: DefaultTask() {
     @OutputDirectory
     val versionSourceDirectory = project.file("build/generated")
     @OutputFile
-    val versionFile:File = project.file("${versionSourceDirectory.path}/org/jetbrains/kotlin/konan/KonanVersion.kt")
+    val versionFile:File = project.file("${versionSourceDirectory.path}/org/jetbrains/kotlin/konan/KonanVersionGenerated.kt")
 
     val konanVersion: String
         @Input get() = project.properties["konanVersion"].toString()
@@ -42,42 +47,13 @@ open class VersionGenerator: DefaultTask() {
                 }?: -1
 
                 + """
-                     |package org.jetbrains.kotlin.konan
-                     |data class KonanVersion(val meta: MetaVersion = MetaVersion.DEV,
-                     |                   val major: Int,
-                     |                   val minor: Int,
-                     |                   val maintenance: Int,
-                     |                   val build:Int) {
-                     |  companion object {
-                     |     val CURRENT = KonanVersion($meta, $major, $minor, $maintenance, $build)
-                     |  }
-                     |  private fun versionToString(showMeta: Boolean = true, showBuild: Boolean = true) = buildString {
-                     |    append(major)
-                     |    append('.')
-                     |    append(minor)
-                     |    if (maintenance != 0) {
-                     |      append('.')
-                     |      append(maintenance)
-                     |    }
-                     |    if (showMeta) {
-                     |      append('-')
-                     |      append(meta.metaString)
-                     |    }
-                     |    if (showBuild && build != -1) {
-                     |      append('-')
-                     |      append(build)
-                     |    }
-                     |  }
-                     |
-                     |  private val isRelease: Boolean
-                     |    get() = meta == MetaVersion.RELEASE
-                     |
-                     |  private val versionString by lazy { versionToString(!isRelease, !isRelease) }
-                     |
-                     |  override fun toString() = versionString
-                     |
-                     |  val gradlePluginVersion by lazy { versionString }
-                     |}
+                   |package org.jetbrains.kotlin.konan
+                   |
+                   |internal val currentKonanVersion: KonanVersion =
+                   |    KonanVersionImpl($meta, $major, $minor, $maintenance, $build)
+                   |
+                   |val KonanVersion.Companion.CURRENT: KonanVersion
+                   |    get() = currentKonanVersion
                 """.trimMargin()
             }
             versionFile.printWriter().use {

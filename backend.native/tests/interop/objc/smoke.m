@@ -68,3 +68,189 @@ int formatStringLength(NSString* format, ...) {
   va_end(args);
   return result.length;
 }
+
+BOOL unexpectedDeallocation = NO;
+
+@implementation MustNotBeDeallocated
+-(void)dealloc {
+  unexpectedDeallocation = YES;
+}
+@end;
+
+static CustomRetainMethodsImpl* retainedCustomRetainMethodsImpl;
+
+@implementation CustomRetainMethodsImpl
+-(id)returnRetained:(id)obj __attribute__((ns_returns_retained)) {
+    return obj;
+}
+
+-(void)consume:(id) __attribute__((ns_consumed)) obj {
+}
+
+-(void)consumeSelf __attribute__((ns_consumes_self)) {
+  retainedCustomRetainMethodsImpl = self; // Retain to detect possible over-release.
+}
+
+-(void (^)(void))returnRetainedBlock:(void (^)(void))block __attribute__((ns_returns_retained)) {
+    return block;
+}
+@end;
+
+@implementation ExceptionThrowerManager
++(void)throwExceptionWith:(id<ExceptionThrower>)thrower {
+    [thrower throwException];
+}
+@end;
+
+@implementation Blocks
++(BOOL)blockIsNull:(void (^)(void))block {
+    return block == nil;
+}
+
++(int (^)(int, int, int, int))same:(int (^)(int, int, int, int))block {
+    return block;
+}
+
++(void (^)(void)) nullBlock {
+    return nil;
+}
+
++(void (^)(void)) notNullBlock {
+    return ^{};
+}
+
+@end;
+
+@implementation TestVarargs
+-(instancetype _Nonnull)initWithFormat:(NSString*)format, ... {
+    self = [super init];
+
+    va_list args;
+    va_start(args, format);
+    self.formatted = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    return self;
+}
+
++(instancetype _Nonnull)testVarargsWithFormat:(NSString*)format, ... {
+    TestVarargs* result = [[self alloc] init];
+
+    va_list args;
+    va_start(args, format);
+    result.formatted = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    return result;
+}
+
++(NSString* _Nonnull)stringWithFormat:(NSString*)format, ... {
+    va_list args;
+    va_start(args, format);
+    NSString* result = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    return result;
+}
+
++(NSObject* _Nonnull)stringWithFormat:(NSString*)format args:(void*)args {
+    abort();
+}
+
+@end;
+
+@implementation TestVarargsSubclass
+-(instancetype _Nonnull)initWithFormat:(NSString*)format args:(void*)args {
+    abort();
+}
+
++(NSString* _Nonnull)stringWithFormat:(NSString*)format args:(void*)args {
+    abort();
+}
+@end;
+
+@implementation TestOverrideInit
+-(instancetype)initWithValue:(int)value {
+    return self = [super init];
+}
+
++(instancetype)createWithValue:(int)value {
+    return [[self alloc] initWithValue:value];
+}
+@end;
+
+@implementation MultipleInheritanceClashBase
+@end;
+
+@implementation MultipleInheritanceClash1
+@end;
+
+@implementation MultipleInheritanceClash2
+@end;
+
+@implementation TestClashingWithAny1
+-(NSString*)description {
+    return @"description";
+}
+
+-(NSString*)toString {
+    return @"toString";
+}
+
+-(NSString*)toString_ {
+    return @"toString_";
+}
+
+-(NSUInteger)hash {
+    return 1;
+}
+
+-(int)hashCode {
+    return 31;
+}
+
+-(BOOL)equals:(id _Nullable)other {
+    return YES;
+}
+@end;
+
+@implementation TestClashingWithAny2
+-(NSString*)description {
+    return @"description";
+}
+
+-(void)toString {
+}
+
+-(NSUInteger)hash {
+    return 2;
+}
+
+-(void)hashCode {
+}
+
+-(void)equals:(int)p {
+}
+@end;
+
+@implementation TestClashingWithAny3
+-(NSString*)description {
+    return @"description";
+}
+
+-(NSString*)toString:(int)p {
+    return [NSString stringWithFormat:@"%s:%d", "toString", p];
+}
+
+-(NSUInteger)hash {
+    return 3;
+}
+
+-(int)hashCode:(int)p {
+    return p + 1;
+}
+
+-(BOOL)equals {
+    return YES;
+}
+@end;

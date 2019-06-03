@@ -1,26 +1,15 @@
 /*
- * Copyright 2010-2018 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.cli.klib.test
 
+import com.intellij.openapi.util.text.StringUtil
 import kotlin.test.*
 import org.jetbrains.kotlin.cli.klib.*
 import org.jetbrains.kotlin.konan.target.Distribution
 import org.jetbrains.kotlin.konan.target.HostManager
-import org.jetbrains.kotlin.preprocessor.convertLineSeparators
 import java.nio.file.Paths
 
 class ContentsTest {
@@ -35,8 +24,8 @@ class ContentsTest {
             println(output.trim().toString())
         }
         assertEquals(
-                expected().convertLineSeparators(),
-                output.trim().toString().convertLineSeparators(),
+                StringUtil.convertLineSeparators(expected()),
+                StringUtil.convertLineSeparators(output.trim().toString()),
                 "klib contents test failed for library: $library"
         )
     }
@@ -50,6 +39,12 @@ class ContentsTest {
     @Test
     fun topLevelFunctions() = klibContents(testLibrary("TopLevelFunctions")) {
         """
+        package <root> {
+            annotation class A constructor() : Annotation
+            annotation class B constructor() : Annotation
+            class Foo constructor()
+        }
+
         package <root> {
             @A @B fun a()
             fun f1(x: Foo)
@@ -67,9 +62,6 @@ class ContentsTest {
             inline fun <reified T> t4(x: T)
             fun <T : Number> t5(x: T)
             fun Foo.e()
-            annotation class A constructor() : Annotation
-            annotation class B constructor() : Annotation
-            class Foo constructor()
         }
         """.trimIndent()
     }
@@ -280,18 +272,86 @@ class ContentsTest {
             class Foo constructor() {
                 @A val annotated: Int = 0
                 var annotatedAccessors: Int
-                    get
-                    set
+                    @A get
+                    @A set
                 val annotatedGetter: Int = 0
-                    get
+                    @A get
                 var annotatedSetter: Int
-                    set
+                    @A set
                 var privateSetter: Int
                     private set
                 protected val protectedSimple: Int = 0
                 val simple: Int = 0
             }
 
+        }
+        """.trimIndent()
+    }
+
+    @Test
+    fun topLevelPropertiesCustomPackage() = klibContents(testLibrary("TopLevelPropertiesCustomPackage")) {
+        """
+        package custom.pkg {
+            typealias MyTransformer = (String) -> Int
+        }
+
+        package custom.pkg {
+            val v1: Int = 1
+            val v2: String = "hello"
+            val v3: (String) -> Int
+            val v4: MyTransformer /* = (String) -> Int */
+        }
+        """.trimIndent()
+    }
+
+    @Test
+    fun topLevelPropertiesRootPackage() = klibContents(testLibrary("TopLevelPropertiesRootPackage")) {
+        """
+        package <root> {
+            typealias MyTransformer = (String) -> Int
+        }
+
+        package <root> {
+            val v1: Int = 1
+            val v2: String = "hello"
+            val v3: (String) -> Int
+            val v4: MyTransformer /* = (String) -> Int */
+        }
+        """.trimIndent()
+    }
+
+    @Test
+    fun topLevelPropertiesWithClassesCustomPackage() = klibContents(testLibrary("TopLevelPropertiesWithClassesCustomPackage")) {
+        """
+        package custom.pkg {
+            object Bar
+            class Foo constructor()
+            typealias MyTransformer = (String) -> Int
+        }
+
+        package custom.pkg {
+            val v1: Int = 1
+            val v2: String = "hello"
+            val v3: (String) -> Int
+            val v4: MyTransformer /* = (String) -> Int */
+        }
+        """.trimIndent()
+    }
+
+    @Test
+    fun topLevelPropertiesWithClassesRootPackage() = klibContents(testLibrary("TopLevelPropertiesWithClassesRootPackage")) {
+        """
+        package <root> {
+            object Bar
+            class Foo constructor()
+            typealias MyTransformer = (String) -> Int
+        }
+
+        package <root> {
+            val v1: Int = 1
+            val v2: String = "hello"
+            val v3: (String) -> Int
+            val v4: MyTransformer /* = (String) -> Int */
         }
         """.trimIndent()
     }

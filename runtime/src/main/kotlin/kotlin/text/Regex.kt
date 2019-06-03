@@ -1,24 +1,14 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.text
 
 import kotlin.text.regex.*
 
-private interface FlagEnum {
+@PublishedApi
+internal interface FlagEnum {
     val value: Int
     val mask: Int
 }
@@ -31,7 +21,7 @@ private fun fromInt(value: Int): Set<RegexOption> =
 /**
  * Provides enumeration values to use to set regular expression options.
  */
-enum class RegexOption(override val value: Int, override val mask: Int = value) : FlagEnum {
+public actual enum class RegexOption(override val value: Int, override val mask: Int = value) : FlagEnum {
     // common
 
     /** Enables case-insensitive matching. Case comparison is Unicode-aware. */
@@ -39,6 +29,7 @@ enum class RegexOption(override val value: Int, override val mask: Int = value) 
 
     /**
      * Enables multiline mode.
+     *
      * In multiline mode the expressions `^` and `$` match just after or just before,
      * respectively, a line terminator or the end of the input sequence.
      */
@@ -46,6 +37,7 @@ enum class RegexOption(override val value: Int, override val mask: Int = value) 
 
     /**
      * Enables literal parsing of the pattern.
+     *
      * Metacharacters or escape sequences in the input sequence will be given no special meaning.
      */
     LITERAL(Pattern.LITERAL),
@@ -72,50 +64,55 @@ enum class RegexOption(override val value: Int, override val mask: Int = value) 
  *
  * The [range] property is available on JVM only.
  */
-data class MatchGroup(val value: String, val range: IntRange)
+public actual data class MatchGroup(actual val value: String, val range: IntRange)
 
 /**
- * Represents an immutable regular expression.
- *
- * For pattern syntax reference see [Pattern]
+ * Represents a compiled regular expression.
+ * Provides functions to match strings in text with a pattern, replace the found occurrences and split text around matches.
  */
-class Regex internal constructor(internal val nativePattern: Pattern) {
+public actual class Regex internal constructor(internal val nativePattern: Pattern) {
 
-    enum class Mode {
+    internal enum class Mode {
         FIND, MATCH
     }
 
     /** Creates a regular expression from the specified [pattern] string and the default options.  */
-    constructor(pattern: String): this(Pattern(pattern))
+    actual constructor(pattern: String): this(Pattern(pattern))
 
     /** Creates a regular expression from the specified [pattern] string and the specified single [option].  */
-    constructor(pattern: String, option: RegexOption): this(Pattern(pattern, ensureUnicodeCase(option.value)))
+    actual constructor(pattern: String, option: RegexOption): this(Pattern(pattern, ensureUnicodeCase(option.value)))
 
     /** Creates a regular expression from the specified [pattern] string and the specified set of [options].  */
-    constructor(pattern: String, options: Set<RegexOption>): this(Pattern(pattern, ensureUnicodeCase(options.toInt())))
+    actual constructor(pattern: String, options: Set<RegexOption>): this(Pattern(pattern, ensureUnicodeCase(options.toInt())))
 
 
     /** The pattern string of this regular expression. */
-    val pattern: String
+    actual val pattern: String
         get() = nativePattern.pattern
 
     private val startNode = nativePattern.startNode
 
     /** The set of options that were used to create this regular expression.  */
-    val options: Set<RegexOption> = fromInt(nativePattern.flags)
+    actual val options: Set<RegexOption> = fromInt(nativePattern.flags)
 
-    companion object {
-        /** Returns a literal regex for the specified [literal] string. */
-        fun fromLiteral(literal: String): Regex = Regex(literal, RegexOption.LITERAL)
-
-        /** Returns a literal pattern for the specified [literal] string. */
-        fun escape(literal: String): String = Pattern.quote(literal)
+    actual companion object {
+        /**
+         * Returns a regular expression that matches the specified [literal] string literally.
+         * No characters of that string will have special meaning when searching for an occurrence of the regular expression.
+         */
+        actual fun fromLiteral(literal: String): Regex = Regex(literal, RegexOption.LITERAL)
 
         /**
-         * Returns a replacement string for the given one that has all backslashes
-         * and dollar signs escaped.
+         * Returns a regular expression pattern string that matches the specified [literal] string literally.
+         * No characters of that string will have special meaning when searching for an occurrence of the regular expression.
          */
-        fun escapeReplacement(literal: String): String {
+        actual fun escape(literal: String): String = Pattern.quote(literal)
+
+        /**
+         * Returns a literal replacement expression for the specified [literal] string.
+         * No characters of that string will have special meaning when it is used as a replacement string in [Regex.replace] function.
+         */
+        actual fun escapeReplacement(literal: String): String {
             if (!literal.contains('\\') && !literal.contains('$'))
                 return literal
 
@@ -148,10 +145,10 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
     }
 
     /** Indicates whether the regular expression matches the entire [input]. */
-    infix fun matches(input: CharSequence): Boolean = doMatch(input, Mode.MATCH) != null
+    actual infix fun matches(input: CharSequence): Boolean = doMatch(input, Mode.MATCH) != null
 
     /** Indicates whether the regular expression can find at least one match in the specified [input]. */
-    fun containsMatchIn(input: CharSequence): Boolean = find(input) != null
+    actual fun containsMatchIn(input: CharSequence): Boolean = find(input) != null
 
     /**
      * Returns the first match of a regular expression in the [input], beginning at the specified [startIndex].
@@ -159,9 +156,9 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
      * @param startIndex An index to start search with, by default 0. Must be not less than zero and not greater than `input.length()`
      * @return An instance of [MatchResult] if match was found or `null` otherwise.
      */
-    fun find(input: CharSequence, startIndex: Int = 0): MatchResult? {
+    actual fun find(input: CharSequence, startIndex: Int): MatchResult? {
         if (startIndex < 0 || startIndex > input.length) {
-            throw IndexOutOfBoundsException() // TODO: Add a message.
+            throw IndexOutOfBoundsException("Start index out of bounds: $startIndex")
         }
         val matchResult = MatchResultImpl(input, this)
         matchResult.mode = Mode.FIND
@@ -176,10 +173,9 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
     }
 
     /**
-     * Returns a sequence of all occurrences of a regular expression within the [input] string,
-     * beginning at the specified [startIndex].
+     * Returns a sequence of all occurrences of a regular expression within the [input] string, beginning at the specified [startIndex].
      */
-    fun findAll(input: CharSequence, startIndex: Int = 0): Sequence<MatchResult>
+    actual fun findAll(input: CharSequence, startIndex: Int): Sequence<MatchResult>
             = generateSequence({ find(input, startIndex) }, MatchResult::next)
 
     /**
@@ -187,7 +183,7 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
      *
      * @return An instance of [MatchResult] if the entire input matches or `null` otherwise.
      */
-    fun matchEntire(input: CharSequence): MatchResult?= doMatch(input, Mode.MATCH)
+    actual fun matchEntire(input: CharSequence): MatchResult?= doMatch(input, Mode.MATCH)
 
     private fun processReplacement(match: MatchResult, replacement: String): String {
         val result = StringBuilder(replacement.length)
@@ -227,7 +223,7 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
      *
      * @param replacement A replacement expression that can include substitutions.
      */
-    fun replace(input: CharSequence, replacement: String): String
+    actual fun replace(input: CharSequence, replacement: String): String
             = replace(input) { match -> processReplacement(match, replacement) }
 
     /**
@@ -235,7 +231,7 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
      * the given function [transform] that takes [MatchResult] and returns a string to be used as a
      * replacement for that match.
      */
-    fun replace(input: CharSequence, transform: (MatchResult) -> CharSequence): String {
+    actual fun replace(input: CharSequence, transform: (MatchResult) -> CharSequence): String {
         var match: MatchResult? = find(input) ?: return input.toString()
 
         var lastStart = 0
@@ -259,10 +255,19 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
     /**
      * Replaces the first occurrence of this regular expression in the specified [input] string with specified [replacement] expression.
      *
-     * @param replacement A replacement expression that can include substitutions. See [Matcher.appendReplacement] for details.
+     * @param replacement A replacement expression that can include substitutions.
      */
-    fun replaceFirst(input: CharSequence, replacement: String): String
-            = replaceFirst(input) { match -> processReplacement(match, replacement) }
+    actual fun replaceFirst(input: CharSequence, replacement: String): String {
+        val match = find(input) ?: return input.toString()
+        val length = input.length
+        val result = StringBuilder(length)
+        result.append(input, 0, match.range.start)
+        result.append(processReplacement(match, replacement))
+        if (match.range.endInclusive + 1 < length) {
+            result.append(input, match.range.endInclusive + 1, length)
+        }
+        return result.toString()
+    }
 
     /**
      * Splits the [input] CharSequence around matches of this regular expression.
@@ -270,44 +275,34 @@ class Regex internal constructor(internal val nativePattern: Pattern) {
      * @param limit Non-negative value specifying the maximum number of substrings the string can be split to.
      *              Zero by default means no limit is set.
      */
-    fun split(input: CharSequence, limit: Int = 0): List<String> {
+    actual fun split(input: CharSequence, limit: Int): List<String> {
         require(limit >= 0, { "Limit must be non-negative, but was $limit." } )
-        if (input.isEmpty()) {
-            return listOf("")
-        } else {
-            var lastStart = 0
-            val result = mutableListOf<String>()
-            var match: MatchResult? = find(input)
 
-            while (match != null && (limit == 0 || result.size < limit - 1)) {
-                result.add(input.substring(lastStart, match.range.start))
-                lastStart = match.range.endInclusive + 1
-                match = match.next()
-            }
-            result.add(input.substring(lastStart, input.length))
-            return result
-        }
+        var match: MatchResult? = find(input)
+
+        if (match == null || limit == 1) return listOf(input.toString())
+
+        val result = ArrayList<String>(if (limit > 0) limit.coerceAtMost(10) else 10)
+        var lastStart = 0
+        val lastSplit = limit - 1 // negative if there's no limit
+
+        do {
+            result.add(input.substring(lastStart, match!!.range.start))
+            lastStart = match.range.endInclusive + 1
+            if (lastSplit >= 0 && result.size == lastSplit) break
+            match = match.next()
+        } while (match != null)
+
+        result.add(input.substring(lastStart, input.length))
+
+        return result
     }
 
-    /** Returns the string representation of this regular expression, namely the [pattern] of this regular expression. */
+    /**
+     * Returns the string representation of this regular expression, namely the [pattern] of this regular expression.
+     *
+     * Note that another regular expression constructed from the same pattern string may have different [options]
+     * and may match strings differently.
+     */
     override fun toString(): String = nativePattern.toString()
-
-    // Native specific =================================================================================================
-    fun lookingAt(input: CharSequence): Boolean = doMatch(input, Mode.FIND) != null
-
-    /** Indicates whether the regular expression can find at least one match in the specified [input] starting with [index]. */
-    fun containsMatchIn(input: CharSequence, index: Int): Boolean = find(input, index) != null
-
-    /** Replaces the first occurrence of this regular expression in the specified [input] string with specified using specified transfromation */
-    fun replaceFirst(input: CharSequence, transform: (MatchResult) -> CharSequence): String {
-        val match = find(input) ?: return input.toString()
-        val length = input.length
-        val result = StringBuilder(length)
-        result.append(input, 0, match.range.start)
-        result.append(transform(match))
-        if (match.range.endInclusive + 1 < length) {
-            result.append(input, match.range.endInclusive + 1, length)
-        }
-        return result.toString()
-    }
 }

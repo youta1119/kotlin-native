@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan.optimizations
@@ -20,6 +9,7 @@ import org.jetbrains.kotlin.backend.konan.DirectedGraphCondensationBuilder
 import org.jetbrains.kotlin.backend.konan.DirectedGraphMultiNode
 import org.jetbrains.kotlin.backend.konan.llvm.Lifetime
 import org.jetbrains.kotlin.ir.IrElement
+import org.jetbrains.kotlin.backend.konan.Context
 
 internal object EscapeAnalysis {
 
@@ -92,10 +82,20 @@ internal object EscapeAnalysis {
     private class FunctionAnalysisResult(val function: DataFlowIR.Function,
                                          val nodesRoles: Map<DataFlowIR.Node, Roles>)
 
-    private class IntraproceduralAnalysis(val functions: Map<DataFlowIR.FunctionSymbol, DataFlowIR.Function>,
+    private class IntraproceduralAnalysis(val context: Context,
+                                          val moduleDFG: ModuleDFG, val externalModulesDFG: ExternalModulesDFG,
                                           val callGraph: CallGraph) {
 
+        val functions = moduleDFG.functions// TODO: use for cross-module analysis: + externalModulesDFG.functionDFGs
+
+        private fun DataFlowIR.Type.resolved(): DataFlowIR.Type.Declared {
+            if (this is DataFlowIR.Type.Declared) return this
+            val hash = (this as DataFlowIR.Type.External).hash
+            return externalModulesDFG.publicTypes[hash] ?: error("Unable to resolve exported type $hash")
+        }
+
         fun analyze(): Map<DataFlowIR.FunctionSymbol, FunctionAnalysisResult> {
+            val nothing = moduleDFG.symbolTable.mapClassReferenceType(context.ir.symbols.nothing.owner).resolved()
             return callGraph.nodes.associateBy({ it.symbol }) {
                 val function = functions[it.symbol]!!
                 val body = function.body
@@ -124,7 +124,9 @@ internal object EscapeAnalysis {
                         }
 
                         is DataFlowIR.Node.Singleton -> {
-                            assignRole(node, Role.WRITTEN_TO_GLOBAL, null /* TODO */)
+                            val type = node.type.resolved()
+                            if (type != nothing)
+                                assignRole(node, Role.WRITTEN_TO_GLOBAL, null /* TODO */)
                         }
 
                         is DataFlowIR.Node.FieldRead -> {
@@ -154,13 +156,22 @@ internal object EscapeAnalysis {
                             }
                         }
 
+                        is DataFlowIR.Node.ArrayWrite -> {
+                            assignRole(node.array.node, Role.FIELD_WRITTEN, RoleInfoEntry(node.value.node))
+                            assignRole(node.value.node, Role.FIELD_WRITTEN, RoleInfoEntry(node.array.node))
+                        }
+
+                        is DataFlowIR.Node.ArrayRead -> {
+                            assignRole(node.array.node, Role.FIELD_WRITTEN, RoleInfoEntry(node))
+                            assignRole(node, Role.FIELD_WRITTEN, RoleInfoEntry(node.array.node))
+                        }
+
                         is DataFlowIR.Node.Variable -> {
                             for (value in node.values) {
                                 assignRole(node, Role.FIELD_WRITTEN, RoleInfoEntry(value.node))
                                 assignRole(value.node, Role.FIELD_WRITTEN, RoleInfoEntry(node))
                             }
                         }
-                        else -> TODO()
                     }
                 }
                 FunctionAnalysisResult(function, nodesRoles)
@@ -228,6 +239,7 @@ internal object EscapeAnalysis {
 
     private class InterproceduralAnalysis(val callGraph: CallGraph,
                                           val intraproceduralAnalysisResult: Map<DataFlowIR.FunctionSymbol, FunctionAnalysisResult>,
+                                          val externalModulesDFG: ExternalModulesDFG,
                                           val lifetimes: MutableMap<IrElement, Lifetime>) {
 
         val escapeAnalysisResults = mutableMapOf<DataFlowIR.FunctionSymbol, FunctionEscapeAnalysisResult>()
@@ -238,8 +250,12 @@ internal object EscapeAnalysis {
                 callGraph.directEdges.forEach { t, u ->
                     println("    FUN $t")
                     u.callSites.forEach {
-                        val local = callGraph.directEdges.containsKey(it.actualCallee)
-                        println("        CALLS ${if (local) "LOCAL" else "EXTERNAL"} ${it.actualCallee}")
+                        val label = when {
+                            it.isVirtual -> "VIRTUAL"
+                            callGraph.directEdges.containsKey(it.actualCallee) -> "LOCAL"
+                            else -> "EXTERNAL"
+                        }
+                        println("        CALLS $label ${it.actualCallee}")
                     }
                     callGraph.reversedEdges[t]!!.forEach {
                         println("        CALLED BY $it")
@@ -266,7 +282,7 @@ internal object EscapeAnalysis {
             }
 
             for (functionSymbol in callGraph.directEdges.keys) {
-                val numberOfParameters = intraproceduralAnalysisResult[functionSymbol]!!.function.parameterTypes.size
+                val numberOfParameters = functionSymbol.parameters.size
                 escapeAnalysisResults[functionSymbol] = FunctionEscapeAnalysisResult(
                         // Assume no edges at the beginning.
                         // Then iteratively add needed.
@@ -318,10 +334,31 @@ internal object EscapeAnalysis {
                     }
                 }
             }
+            multiNode.nodes.forEach {
+                val escapeAnalysisResult = escapeAnalysisResults[it]!!
+                var escapes = 0
+                val pointsTo = escapeAnalysisResult.parameters.withIndex().map { (index, parameterEAResult) ->
+                    if (parameterEAResult.escapes)
+                        escapes = escapes or (1 shl index)
+                    var pointsToMask = 0
+                    parameterEAResult.pointsTo.forEach {
+                        pointsToMask = pointsToMask or (1 shl it)
+                    }
+                    pointsToMask
+                }.toIntArray()
+                it.escapes = escapes
+                it.pointsTo = pointsTo
+            }
             for (graph in pointsToGraphs.values) {
-                graph.nodes.keys
-                        .filterIsInstance<DataFlowIR.Node.Call>()
-                        .forEach { call -> call.callSite?.let { lifetimes.put(it, graph.lifetimeOf(call)) } }
+                for (node in graph.nodes.keys) {
+                    val ir = when (node) {
+                        is DataFlowIR.Node.Call -> node.irCallSite
+                        is DataFlowIR.Node.ArrayRead -> node.irCallSite
+                        is DataFlowIR.Node.FieldRead -> node.ir
+                        else -> null
+                    }
+                    ir?.let { lifetimes.put(it, graph.lifetimeOf(node)) }
+                }
             }
         }
 
@@ -333,9 +370,12 @@ internal object EscapeAnalysis {
 
             callGraph.directEdges[function]!!.callSites.forEach {
                 val callee = it.actualCallee
-                val calleeEAResult = callGraph.directEdges[callee]?.let { escapeAnalysisResults[it.symbol]!! }
-                        ?: getExternalFunctionEAResult(it)
-                pointsToGraph.processCall(it.call, calleeEAResult)
+                val calleeEAResult = if (it.isVirtual)
+                                         getExternalFunctionEAResult(it)
+                                     else
+                                         callGraph.directEdges[callee]?.let { escapeAnalysisResults[it.symbol]!! }
+                                             ?: getExternalFunctionEAResult(it)
+                pointsToGraph.processCall(it, calleeEAResult)
             }
 
             DEBUG_OUTPUT(0) {
@@ -355,30 +395,36 @@ internal object EscapeAnalysis {
         }
 
         private fun getConservativeFunctionEAResult(symbol: DataFlowIR.FunctionSymbol): FunctionEscapeAnalysisResult {
-            val numberOfParameters = symbol.numberOfParameters
+            val numberOfParameters = symbol.parameters.size
             return FunctionEscapeAnalysisResult((0..numberOfParameters).map {
                 ParameterEscapeAnalysisResult(
-                        escapes = true,
+                        escapes  = true,
                         pointsTo = IntArray(0)
                 )
             }.toTypedArray())
         }
 
-        private fun getExternalFunctionEAResult(callSite: CallGraphNode.CallSite): FunctionEscapeAnalysisResult {
-            val callee = callSite.actualCallee
+        private fun DataFlowIR.FunctionSymbol.resolved(): DataFlowIR.FunctionSymbol {
+            if (this is DataFlowIR.FunctionSymbol.External)
+                return externalModulesDFG.publicFunctions[this.hash] ?: this
+            return this
+        }
 
-            val calleeEAResult = if (callSite.call is DataFlowIR.Node.VirtualCall) {
+        private fun getExternalFunctionEAResult(callSite: CallGraphNode.CallSite): FunctionEscapeAnalysisResult {
+            val callee = callSite.actualCallee.resolved()
+
+            val calleeEAResult = if (callSite.isVirtual) {
 
                 DEBUG_OUTPUT(0) { println("A virtual call: $callee") }
 
                 getConservativeFunctionEAResult(callee)
             } else {
-                callSite.call as DataFlowIR.Node.StaticCall
-                callee as DataFlowIR.FunctionSymbol.External
+
+                DEBUG_OUTPUT(0) { println("An external call: $callee") }
 
                 FunctionEscapeAnalysisResult.fromBits(
                         callee.escapes ?: 0,
-                        (0..callee.numberOfParameters).map { callee.pointsTo?.elementAtOrNull(it) ?: 0 }
+                        (0..callee.parameters.size).map { callee.pointsTo?.elementAtOrNull(it) ?: 0 }
                 )
             }
 
@@ -408,14 +454,11 @@ internal object EscapeAnalysis {
 
             val beingReturned = roles.has(Role.RETURN_VALUE)
 
-            var parameterPointingOnUs: Int? = null
-            var pointsMoreThanOneParameter = false
+            val parametersPointingOnUs = mutableSetOf<Int>()
 
             fun addIncomingParameter(parameter: Int) {
-                if (pointsMoreThanOneParameter) return
-                if (parameterPointingOnUs == null)
-                    parameterPointingOnUs = parameter
-                else pointsMoreThanOneParameter = true
+                if (kind == PointsToGraphNodeKind.ESCAPES) return
+                parametersPointingOnUs += parameter
             }
         }
 
@@ -431,25 +474,28 @@ internal object EscapeAnalysis {
                     PointsToGraphNodeKind.ESCAPES -> Lifetime.GLOBAL
 
                     PointsToGraphNodeKind.LOCAL -> {
-                        if (it.pointsMoreThanOneParameter)
-                            Lifetime.GLOBAL
-                        else {
-                            val parameterPointingOnUs = it.parameterPointingOnUs
-                            if (parameterPointingOnUs != null)
+                        if (it.parametersPointingOnUs.isEmpty()) {
+                            // A value is neither stored into a global nor into any parameter nor into the return value -
+                            // it can be allocated locally.
+                            Lifetime.LOCAL
+                        } else {
+                            if (it.parametersPointingOnUs.size == 1) { // TODO: remove.
                                 // A value is stored into a parameter field.
-                                Lifetime.PARAMETER_FIELD(parameterPointingOnUs)
-                            else
-                                // A value is neither stored into a global nor into any parameter nor into the return value -
-                                // it can be allocated locally.
-                                Lifetime.LOCAL
+                                Lifetime.PARAMETER_FIELD(it.parametersPointingOnUs.first())
+                            } else {
+                                // A value is stored into several parameters fields.
+                                Lifetime.PARAMETERS_FIELD(it.parametersPointingOnUs.toIntArray(), false)
+                            }
                         }
                     }
 
                     PointsToGraphNodeKind.RETURN_VALUE -> {
                         when {
-                            it.parameterPointingOnUs != null -> Lifetime.GLOBAL
                             // If a value is explicitly returned.
                             returnValues.contains(node) -> Lifetime.RETURN_VALUE
+
+                            it.parametersPointingOnUs.isNotEmpty() -> Lifetime.PARAMETERS_FIELD(it.parametersPointingOnUs.toIntArray(), true)
+
                             // A value is stored into a field of the return value.
                             else -> Lifetime.INDIRECT_RETURN_VALUE
                         }
@@ -515,25 +561,38 @@ internal object EscapeAnalysis {
                 }
             }
 
-            fun processCall(callSite: DataFlowIR.Node.Call, calleeEscapeAnalysisResult: FunctionEscapeAnalysisResult) {
+            fun print_digraph() {
+                println("digraph {")
+                val ids = ids ?: functionAnalysisResult.function.body.nodes.withIndex().associateBy({ it.value }, { it.index })
+                nodes.forEach { t, u ->
+                    u.edges.forEach {
+                        println("    ${ids[t]} -> ${ids[it]};")
+                    }
+                }
+                println("}")
+            }
+
+            fun processCall(callSite: CallGraphNode.CallSite, calleeEscapeAnalysisResult: FunctionEscapeAnalysisResult) {
+                val call = callSite.call
                 DEBUG_OUTPUT(0) {
                     println("Processing callSite")
-                    println(nodeToStringWhole(callSite))
+                    println(nodeToStringWhole(call))
+                    println("Actual callee: ${callSite.actualCallee}")
                     println("Callee escape analysis result:")
                     println(calleeEscapeAnalysisResult.toString())
                 }
 
-                val arguments = if (callSite is DataFlowIR.Node.NewObject) {
-                                    (0..callSite.arguments.size).map {
-                                        if (it == 0) callSite else callSite.arguments[it - 1].node
+                val arguments = if (call is DataFlowIR.Node.NewObject) {
+                                    (0..call.arguments.size).map {
+                                        if (it == 0) call else call.arguments[it - 1].node
                                     }
                                 } else {
-                                    (0..callSite.arguments.size).map {
-                                        if (it < callSite.arguments.size) callSite.arguments[it].node else callSite
+                                    (0..call.arguments.size).map {
+                                        if (it < call.arguments.size) call.arguments[it].node else call
                                     }
                                 }
 
-                for (index in 0..callSite.arguments.size) {
+                for (index in 0..call.arguments.size) {
                     val parameterEAResult = calleeEscapeAnalysisResult.parameters[index]
                     val from = arguments[index]
                     if (parameterEAResult.escapes) {
@@ -660,12 +719,12 @@ internal object EscapeAnalysis {
         }
     }
 
-    fun computeLifetimes(moduleDFG: ModuleDFG, externalModulesDFG: ExternalModulesDFG,
+    fun computeLifetimes(context: Context, moduleDFG: ModuleDFG, externalModulesDFG: ExternalModulesDFG,
                          callGraph: CallGraph, lifetimes: MutableMap<IrElement, Lifetime>) {
         assert(lifetimes.isEmpty())
 
         val intraproceduralAnalysisResult =
-                IntraproceduralAnalysis(moduleDFG.functions + externalModulesDFG.functionDFGs, callGraph).analyze()
-        InterproceduralAnalysis(callGraph, intraproceduralAnalysisResult, lifetimes).analyze()
+                IntraproceduralAnalysis(context, moduleDFG, externalModulesDFG, callGraph).analyze()
+        InterproceduralAnalysis(callGraph, intraproceduralAnalysisResult, externalModulesDFG, lifetimes).analyze()
     }
 }

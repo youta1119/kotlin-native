@@ -1,59 +1,52 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan.lower
 
-import org.jetbrains.kotlin.backend.common.BodyLoweringPass
+import org.jetbrains.kotlin.backend.common.FileLoweringPass
 import org.jetbrains.kotlin.backend.common.atMostOne
-import org.jetbrains.kotlin.backend.konan.Context
-import org.jetbrains.kotlin.backend.konan.isValueType
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
+import org.jetbrains.kotlin.backend.common.lower.IrBuildingTransformer
+import org.jetbrains.kotlin.backend.common.lower.at
+import org.jetbrains.kotlin.backend.common.lower.irNot
+import org.jetbrains.kotlin.backend.konan.*
+import org.jetbrains.kotlin.backend.konan.ir.containsNull
+import org.jetbrains.kotlin.backend.konan.ir.isSubtypeOf
+import org.jetbrains.kotlin.descriptors.CallableMemberDescriptor
+import org.jetbrains.kotlin.ir.builders.*
+import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltinOperatorDescriptor
-import org.jetbrains.kotlin.ir.expressions.IrBody
 import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrTypeOperatorCall
 import org.jetbrains.kotlin.ir.expressions.impl.IrCallImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
+import org.jetbrains.kotlin.ir.types.makeNullable
+import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
+import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.isNothing
+import org.jetbrains.kotlin.ir.types.toKotlinType
+import org.jetbrains.kotlin.ir.util.*
+import org.jetbrains.kotlin.ir.util.defaultOrNullableType
 import org.jetbrains.kotlin.ir.util.isNullConst
-import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
-import org.jetbrains.kotlin.types.KotlinType
-import org.jetbrains.kotlin.types.isNullable
-import org.jetbrains.kotlin.types.typeUtil.isNothing
-import org.jetbrains.kotlin.types.typeUtil.isSubtypeOf
 
 /**
  * This lowering pass lowers some calls to [IrBuiltinOperatorDescriptor]s.
  */
-internal class BuiltinOperatorLowering(val context: Context) : BodyLoweringPass {
-
-    private val transformer = BuiltinOperatorTransformer(context)
-
-    override fun lower(irBody: IrBody) {
-        irBody.transformChildrenVoid(transformer)
-    }
-
-}
-
-private class BuiltinOperatorTransformer(val context: Context) : IrElementTransformerVoid() {
+internal class BuiltinOperatorLowering(val context: Context) : FileLoweringPass, IrBuildingTransformer(context) {
 
     private val builtIns = context.builtIns
     private val irBuiltins = context.irModule!!.irBuiltins
+    private val symbols = context.ir.symbols
+
+    override fun lower(irFile: IrFile) {
+        irFile.transformChildrenVoid(this)
+    }
 
     override fun visitCall(expression: IrCall): IrExpression {
         expression.transformChildrenVoid(this)
@@ -74,18 +67,20 @@ private class BuiltinOperatorTransformer(val context: Context) : IrElementTransf
         return expression
     }
 
-    private fun ieee754EqualsDescriptors(): List<FunctionDescriptor> =
-            irBuiltins.ieee754equalsFunByOperandType.values.map(IrSimpleFunction::descriptor)
+    private fun ieee754EqualsSymbols(): List<IrSimpleFunctionSymbol> =
+            irBuiltins.ieee754equalsFunByOperandType.values.toList()
 
-    private fun transformBuiltinOperator(expression: IrCall): IrExpression = when (expression.descriptor) {
-        irBuiltins.eqeq, in ieee754EqualsDescriptors() -> lowerEqeq(expression)
+    private fun transformBuiltinOperator(expression: IrCall): IrExpression = when (expression.symbol) {
+        irBuiltins.eqeqSymbol, in ieee754EqualsSymbols() -> lowerEqeq(expression)
 
-        irBuiltins.eqeqeq -> lowerEqeqeq(expression)
+        irBuiltins.eqeqeqSymbol -> lowerEqeqeq(expression)
 
-        irBuiltins.throwNpe -> IrCallImpl(expression.startOffset, expression.endOffset,
+        irBuiltins.throwNpeSymbol -> IrCallImpl(expression.startOffset, expression.endOffset,
+                context.ir.symbols.ThrowNullPointerException.owner.returnType,
                 context.ir.symbols.ThrowNullPointerException)
 
-        irBuiltins.noWhenBranchMatchedException -> IrCallImpl(expression.startOffset, expression.endOffset,
+        irBuiltins.noWhenBranchMatchedExceptionSymbol -> IrCallImpl(expression.startOffset, expression.endOffset,
+                context.ir.symbols.ThrowNoWhenBranchMatchedException.owner.returnType,
                 context.ir.symbols.ThrowNoWhenBranchMatchedException)
 
         else -> expression
@@ -95,7 +90,7 @@ private class BuiltinOperatorTransformer(val context: Context) : IrElementTransf
         val lhs = expression.getValueArgument(0)!!
         val rhs = expression.getValueArgument(1)!!
 
-        return if (lhs.type.isValueType() && rhs.type.isValueType()) {
+        return if (lhs.type.isInlinedNative() && rhs.type.isInlinedNative()) {
             // Achieve the same behavior as with JVM BE: if both sides of `===` are values, then compare by value:
             lowerEqeq(expression)
             // Note: such comparisons are deprecated.
@@ -104,56 +99,171 @@ private class BuiltinOperatorTransformer(val context: Context) : IrElementTransf
         }
     }
 
+    private fun IrBuilderWithScope.reinterpret(expression: IrExpression, toType: IrType) =
+            reinterpret(expression, expression.type, toType)
+
+    private fun IrBuilderWithScope.reinterpret(expression: IrExpression, fromType: IrType, toType: IrType) =
+            irCall(symbols.reinterpret.owner, listOf(fromType, toType)).apply {
+                extensionReceiver = expression
+            }
+
+    private val anyEquals = irBuiltins.anyClass.owner.simpleFunctions().single { it.name.asString() == "equals" }
+
     private fun lowerEqeq(expression: IrCall): IrExpression {
         // TODO: optimize boxing?
-        val startOffset = expression.startOffset
-        val endOffset = expression.endOffset
 
-        val equals = selectEqualsFunction(expression)
+        builder.at(expression).run {
+            val lhs = expression.getValueArgument(0)!!
+            val rhs = expression.getValueArgument(1)!!
 
-        return IrCallImpl(startOffset, endOffset, equals).apply {
-            putValueArgument(0, expression.getValueArgument(0)!!)
-            putValueArgument(1, expression.getValueArgument(1)!!)
+            if (rhs.isNullConst()) {
+                return irEqeqNull(lhs)
+            }
+
+            if (lhs.isNullConst()) {
+                return irEqeqNull(rhs)
+            }
+
+            if (expression.symbol == irBuiltins.eqeqSymbol) {
+                lhs.type.getInlinedClassNative()?.let {
+                    if (it == rhs.type.getInlinedClassNative() && inlinedClassHasDefaultEquals(it)) {
+                        return genInlineClassEquals(expression.symbol, rhs, lhs)
+                    }
+                }
+            }
+
+            return genFloatingOrReferenceEquals(expression.symbol, lhs, rhs)
         }
     }
 
-    private fun selectEqualsFunction(expression: IrCall): IrSimpleFunctionSymbol {
-        val lhs = expression.getValueArgument(0)!!
-        val rhs = expression.getValueArgument(1)!!
-
-        val nullableNothingType = builtIns.nullableNothingType
-        if (lhs.type.isSubtypeOf(nullableNothingType) && rhs.type.isSubtypeOf(nullableNothingType)) {
-            // Compare by reference if each part is either `Nothing` or `Nothing?`:
-            return irBuiltins.eqeqeqSymbol
+    private fun inlinedClassHasDefaultEquals(irClass: IrClass): Boolean {
+        if (!irClass.descriptor.isInline) {
+            // Implicitly-inlined class, e.g. primitive one.
+            return true
         }
 
+        val equals = irClass.simpleFunctions()
+                .single { it.name.asString() == "equals" && it.valueParameters.size == 1 && it.overrides(anyEquals) }
+
+        // Note: this is not absolutely correct for inline class from other module
+        // since custom equals implementation can be added after compilation but before linking.
+        // TODO: reimplement after inline classes get properly designed `equals` operator.
+        // see https://youtrack.jetbrains.com/issue/KT-26354.
+        return equals.descriptor.kind == CallableMemberDescriptor.Kind.SYNTHESIZED
+    }
+
+    fun IrBuilderWithScope.genInlineClassEquals(
+            symbol: IrFunctionSymbol,
+            rhs: IrExpression,
+            lhs: IrExpression
+    ): IrExpression {
+        val lhsBinaryType = lhs.type.computeBinaryType()
+        return when (lhsBinaryType) {
+            is BinaryType.Primitive -> {
+                val areEqualByValue = symbols.areEqualByValue[lhsBinaryType.type]!!.owner
+                irCall(areEqualByValue).apply {
+                    putValueArgument(0, reinterpret(lhs, areEqualByValue.valueParameters[0].type))
+                    putValueArgument(1, reinterpret(rhs, areEqualByValue.valueParameters[1].type))
+                }
+            }
+
+            is BinaryType.Reference -> {
+                // TODO: don't use binaryType.nullable.
+                val lhsRawType = irBuiltins.anyClass.owner.defaultOrNullableType(lhsBinaryType.nullable)
+                val rhsBinaryType = rhs.type.computeBinaryType() as BinaryType.Reference<*>
+                val rhsRawType = irBuiltins.anyClass.owner.defaultOrNullableType(rhsBinaryType.nullable)
+
+                genFloatingOrReferenceEquals(
+                        symbol,
+                        reinterpret(lhs, lhsRawType),
+                        reinterpret(rhs, rhsRawType)
+                )
+            }
+        }
+    }
+
+    private fun IrBuilderWithScope.irEqeqNull(expression: IrExpression): IrExpression {
+        val type = expression.type.makeNullable()
+        val primitiveBinaryTypeOrNull = type.computePrimitiveBinaryTypeOrNull()
+        return when (primitiveBinaryTypeOrNull) {
+            null -> irEqeqeq(reinterpret(expression, type, irBuiltins.anyNType), irNull())
+            PrimitiveBinaryType.POINTER -> irCall(symbols.areEqualByValue[PrimitiveBinaryType.POINTER]!!.owner).apply {
+                putValueArgument(0, reinterpret(expression, type, symbols.nativePtrType))
+                putValueArgument(1, reinterpret(irNull(), type, symbols.nativePtrType))
+            }
+            else -> error("Nullable type ${type.toKotlinType()} is $primitiveBinaryTypeOrNull")
+        }
+    }
+
+    private fun IrBuilderWithScope.irLogicalAnd(lhs: IrExpression, rhs: IrExpression) = context.andand(lhs, rhs)
+    private fun IrBuilderWithScope.irIsNull(exp: IrExpression) = irEqeqeq(exp, irNull())
+    private fun IrBuilderWithScope.irIsNotNull(exp: IrExpression) = irNot(irEqeqeq(exp, irNull()))
+
+    private fun IrBuilderWithScope.genFloatingOrReferenceEquals(symbol: IrFunctionSymbol, lhs: IrExpression, rhs: IrExpression): IrExpression {
         // TODO: areEqualByValue and ieee754Equals intrinsics are specially treated by code generator
         // and thus can be declared synthetically in the compiler instead of explicitly in the runtime.
+        fun callEquals(lhs: IrExpression, rhs: IrExpression) =
+                if (symbol in ieee754EqualsSymbols())
+                // Find a type-compatible `konan.internal.ieee754Equals` intrinsic:
+                    irCall(selectIntrinsic(symbols.ieee754Equals, lhs.type, rhs.type, true)!!).apply {
+                        putValueArgument(0, lhs)
+                        putValueArgument(1, rhs)
+                    }
+                else
+                    irCall(symbols.equals).apply {
+                        dispatchReceiver = lhs
+                        putValueArgument(0, rhs)
+                    }
 
-        // Find a type-compatible `konan.internal.ieee754Equals` intrinsic:
-        if (expression.descriptor in ieee754EqualsDescriptors()) {
-            return if (lhs.type.isNullable() || rhs.type.isNullable())
-                selectIntrinsic(context.ir.symbols.ieee754NullableEquals, lhs.type, rhs.type)!!
-            else
-                selectIntrinsic(context.ir.symbols.ieee754Equals, lhs.type, rhs.type)!!
-        }
+        val lhsIsNotNullable = !lhs.type.containsNull()
+        val rhsIsNotNullable = !rhs.type.containsNull()
 
-        // Find a type-compatible `konan.internal.areEqualByValue` intrinsic:
-        selectIntrinsic(context.ir.symbols.areEqualByValue, lhs.type, rhs.type)?.let {
-            return it
-        }
-
-        return if (lhs.isNullConst() || rhs.isNullConst()) {
-            // or compare by reference if left or right part is `null`:
-            irBuiltins.eqeqeqSymbol
+        return if (symbol in ieee754EqualsSymbols()) {
+            if (lhsIsNotNullable && rhsIsNotNullable)
+                callEquals(lhs, rhs)
+            else irBlock {
+                val lhsTemp = irTemporary(lhs)
+                val rhsTemp = irTemporary(rhs)
+                if (lhsIsNotNullable xor rhsIsNotNullable) { // Exactly one nullable.
+                    +irLogicalAnd(
+                            irIsNotNull(irGet(if (lhsIsNotNullable) rhsTemp else lhsTemp)),
+                            callEquals(irGet(lhsTemp), irGet(rhsTemp))
+                    )
+                } else { // Both are nullable.
+                    +irIfThenElse(context.irBuiltIns.booleanType, irIsNull(irGet(lhsTemp)),
+                            irIsNull(irGet(rhsTemp)),
+                            irLogicalAnd(
+                                    irIsNotNull(irGet(rhsTemp)),
+                                    callEquals(irGet(lhsTemp), irGet(rhsTemp))
+                            )
+                    )
+                }
+            }
         } else {
-            // or use the general implementation:
-            context.ir.symbols.areEqual
+            if (lhsIsNotNullable)
+                callEquals(lhs, rhs)
+            else {
+                irBlock {
+                    val lhsTemp = irTemporary(lhs)
+                    if (rhsIsNotNullable)
+                        +irLogicalAnd(irIsNotNull(irGet(lhsTemp)), callEquals(irGet(lhsTemp), rhs))
+                    else {
+                        val rhsTemp = irTemporary(rhs)
+                        +irIfThenElse(irBuiltins.booleanType, irIsNull(irGet(lhsTemp)),
+                                irIsNull(irGet(rhsTemp)),
+                                callEquals(irGet(lhsTemp), irGet(rhsTemp))
+                        )
+                    }
+                }
+            }
         }
     }
 
-    private fun selectIntrinsic(from: List<IrSimpleFunctionSymbol>, lhsType: KotlinType, rhsType: KotlinType):
-            IrSimpleFunctionSymbol? = from.atMostOne {
-        lhsType.isSubtypeOf(it.owner.valueParameters[0].type) && rhsType.isSubtypeOf(it.owner.valueParameters[1].type)
-    }
+    private fun selectIntrinsic(from: List<IrSimpleFunctionSymbol>, lhsType: IrType, rhsType: IrType, allowNullable: Boolean) =
+            from.atMostOne {
+                val leftParamType = it.owner.valueParameters[0].type
+                val rightParamType = it.owner.valueParameters[1].type
+                (lhsType.isSubtypeOf(leftParamType) || (allowNullable && lhsType.isSubtypeOf(leftParamType.makeNullable())))
+                        && (rhsType.isSubtypeOf(rightParamType) || (allowNullable && rhsType.isSubtypeOf(rightParamType.makeNullable())))
+            }
 }

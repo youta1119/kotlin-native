@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package runtime.text.string_builder0
 
 import kotlin.test.*
@@ -170,10 +175,10 @@ fun testReverse() {
     assertTrue(builder === builder.reverse())
     assertEquals(builder, "654321")
 
-    builder.length = 1
+    builder.setLength(1)
     assertEquals(builder, "6")
 
-    builder.length = 0
+    builder.setLength(0)
     assertEquals(builder, "")
 
     var str: String = "a"
@@ -261,7 +266,7 @@ fun testBasic() {
     assertEquals(19, sb.length)
     assertEquals("1, true12345678null", sb.toString())
 
-    sb.length = 0
+    sb.setLength(0)
     assertEquals(0, sb.length)
     assertEquals("", sb.toString())
 }

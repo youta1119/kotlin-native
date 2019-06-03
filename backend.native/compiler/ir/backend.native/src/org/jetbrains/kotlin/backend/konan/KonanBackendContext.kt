@@ -1,24 +1,14 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan
 
 import org.jetbrains.kotlin.backend.common.CommonBackendContext
 import org.jetbrains.kotlin.backend.konan.descriptors.KonanSharedVariablesManager
-import org.jetbrains.kotlin.backend.konan.descriptors.konanInternal
+import org.jetbrains.kotlin.backend.konan.descriptors.findPackage
+import org.jetbrains.kotlin.backend.konan.descriptors.kotlinNativeInternal
 import org.jetbrains.kotlin.backend.konan.ir.KonanIr
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageLocation
@@ -29,9 +19,12 @@ import org.jetbrains.kotlin.descriptors.FunctionDescriptor
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.IrFile
+import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
+import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
+import org.jetbrains.kotlin.ir.declarations.IrDeclaration
 import org.jetbrains.kotlin.name.Name
 
-abstract internal class KonanBackendContext(val config: KonanConfig) : CommonBackendContext {
+internal abstract class KonanBackendContext(val config: KonanConfig) : CommonBackendContext {
     abstract override val builtIns: KonanBuiltIns
 
     abstract override val ir: KonanIr
@@ -42,11 +35,11 @@ abstract internal class KonanBackendContext(val config: KonanConfig) : CommonBac
         KonanSharedVariablesManager(this)
     }
 
-    override fun getInternalClass(name: String): ClassDescriptor =
-            builtIns.konanInternal.getContributedClassifier(Name.identifier(name), NoLookupLocation.FROM_BACKEND) as ClassDescriptor
+    fun getKonanInternalClass(name: String): ClassDescriptor =
+            builtIns.kotlinNativeInternal.getContributedClassifier(Name.identifier(name), NoLookupLocation.FROM_BACKEND) as ClassDescriptor
 
-    override fun getInternalFunctions(name: String): List<FunctionDescriptor> =
-            builtIns.konanInternal.getContributedFunctions(Name.identifier(name), NoLookupLocation.FROM_BACKEND).toList()
+    fun getKonanInternalFunctions(name: String): List<FunctionDescriptor> =
+            builtIns.kotlinNativeInternal.getContributedFunctions(Name.identifier(name), NoLookupLocation.FROM_BACKEND).toList()
 
     val messageCollector: MessageCollector
         get() = config.configuration.getNotNull(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY)
@@ -59,14 +52,25 @@ abstract internal class KonanBackendContext(val config: KonanConfig) : CommonBac
         )
     }
 
-    private fun IrElement.getCompilerMessageLocation(containingFile: IrFile): CompilerMessageLocation? {
-        val sourceRangeInfo = containingFile.fileEntry.getSourceRangeInfo(this.startOffset, this.endOffset)
-        return CompilerMessageLocation.create(
-                path = sourceRangeInfo.filePath,
-                line = sourceRangeInfo.startLineNumber + 1,
-                column = sourceRangeInfo.startColumnNumber + 1,
-                lineContent = null // TODO: retrieve the line content.
-        )
-    }
+    override val internalPackageFqn = KonanFqNames.internalPackageName
 
+}
+
+internal fun IrElement.getCompilerMessageLocation(containingFile: IrFile): CompilerMessageLocation? =
+        createCompilerMessageLocation(containingFile, this.startOffset, this.endOffset)
+
+internal fun IrBuilderWithScope.getCompilerMessageLocation(): CompilerMessageLocation? {
+    val declaration = this.scope.scopeOwnerSymbol.owner as? IrDeclaration ?: return null
+    val file = declaration.findPackage() as? IrFile ?: return null
+    return createCompilerMessageLocation(file, startOffset, endOffset)
+}
+
+private fun createCompilerMessageLocation(containingFile: IrFile, startOffset: Int, endOffset: Int): CompilerMessageLocation? {
+    val sourceRangeInfo = containingFile.fileEntry.getSourceRangeInfo(startOffset, endOffset)
+    return CompilerMessageLocation.create(
+            path = sourceRangeInfo.filePath,
+            line = sourceRangeInfo.startLineNumber + 1,
+            column = sourceRangeInfo.startColumnNumber + 1,
+            lineContent = null // TODO: retrieve the line content.
+    )
 }

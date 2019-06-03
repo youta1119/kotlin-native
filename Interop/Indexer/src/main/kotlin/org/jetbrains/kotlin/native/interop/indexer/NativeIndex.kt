@@ -29,7 +29,9 @@ interface HeaderInclusionPolicy {
      * or `null` for builtin declarations.
      */
     fun excludeUnused(headerName: String?): Boolean
+}
 
+interface HeaderExclusionPolicy {
     /**
      * Whether all declarations from this header should be excluded.
      *
@@ -37,23 +39,39 @@ interface HeaderInclusionPolicy {
      * but not included into the root collections.
      */
     fun excludeAll(headerId: HeaderId): Boolean
-
-    // TODO: these methods should probably be combined into the only one, but it would require some refactoring.
 }
 
-data class NativeLibrary(val includes: List<String>,
-                         val additionalPreambleLines: List<String>,
-                         val compilerArgs: List<String>,
+sealed class NativeLibraryHeaderFilter {
+    class NameBased(
+            val policy: HeaderInclusionPolicy,
+            val excludeDepdendentModules: Boolean
+    ) : NativeLibraryHeaderFilter()
+
+    class Predefined(val headers: Set<String>) : NativeLibraryHeaderFilter()
+}
+
+interface Compilation {
+    val includes: List<String>
+    val additionalPreambleLines: List<String>
+    val compilerArgs: List<String>
+    val language: Language
+}
+
+// TODO: consider replacing inheritance by composition and turning Compilation into final class.
+
+data class NativeLibrary(override val includes: List<String>,
+                         override val additionalPreambleLines: List<String>,
+                         override val compilerArgs: List<String>,
                          val headerToIdMapper: HeaderToIdMapper,
-                         val language: Language,
+                         override val language: Language,
                          val excludeSystemLibs: Boolean, // TODO: drop?
-                         val excludeDepdendentModules: Boolean,
-                         val headerInclusionPolicy: HeaderInclusionPolicy)
+                         val headerExclusionPolicy: HeaderExclusionPolicy,
+                         val headerFilter: NativeLibraryHeaderFilter) : Compilation
 
 /**
  * Retrieves the definitions from given C header file using given compiler arguments (e.g. defines).
  */
-fun buildNativeIndex(library: NativeLibrary): NativeIndex = buildNativeIndexImpl(library)
+fun buildNativeIndex(library: NativeLibrary, verbose: Boolean): NativeIndex = buildNativeIndexImpl(library, verbose)
 
 /**
  * This class describes the IR of definitions from C header file(s).
@@ -67,6 +85,7 @@ abstract class NativeIndex {
     abstract val typedefs: Collection<TypedefDef>
     abstract val functions: Collection<FunctionDecl>
     abstract val macroConstants: Collection<ConstantDef>
+    abstract val wrappedMacros: Collection<WrappedMacroDef>
     abstract val globals: Collection<GlobalDecl>
     abstract val includedHeaders: Collection<HeaderId>
 }
@@ -84,15 +103,24 @@ interface TypeDeclaration {
     val location: Location
 }
 
+sealed class StructMember(val name: String, val type: Type) {
+    abstract val offset: Long?
+}
+
 /**
  * C struct field.
  */
-class Field(val name: String, val type: Type, val offset: Long, val typeAlign: Long)
+class Field(name: String, type: Type, override val offset: Long, val typeSize: Long, val typeAlign: Long)
+    : StructMember(name, type)
 
 val Field.isAligned: Boolean
     get() = offset % (typeAlign * 8) == 0L
 
-class BitField(val name: String, val type: Type, val offset: Long, val size: Int)
+class BitField(name: String, type: Type, override val offset: Long, val size: Int) : StructMember(name, type)
+
+class IncompleteField(name: String, type: Type) : StructMember(name, type) {
+    override val offset: Long? get() = null
+}
 
 /**
  * C struct declaration.
@@ -108,13 +136,17 @@ abstract class StructDecl(val spelling: String) : TypeDeclaration {
  * @param hasNaturalLayout must be `false` if the struct has unnatural layout, e.g. it is `packed`.
  * May be `false` even if the struct has natural layout.
  */
-abstract class StructDef(val size: Long, val align: Int,
-                         val decl: StructDecl,
-                         val hasNaturalLayout: Boolean) {
+abstract class StructDef(val size: Long, val align: Int, val decl: StructDecl) {
 
-    abstract val fields: List<Field>
-    // TODO: merge two lists to preserve declaration order.
-    abstract val bitFields: List<BitField>
+    enum class Kind {
+        STRUCT, UNION
+    }
+
+    abstract val members: List<StructMember>
+    abstract val kind: Kind
+
+    val fields: List<Field> get() = members.filterIsInstance<Field>()
+    val bitFields: List<BitField> get() = members.filterIsInstance<BitField>()
 }
 
 /**
@@ -142,8 +174,8 @@ sealed class ObjCClassOrProtocol(val name: String) : ObjCContainer(), TypeDeclar
 
 data class ObjCMethod(
         val selector: String, val encoding: String, val parameters: List<Parameter>, private val returnType: Type,
-        val isClass: Boolean, val nsConsumesSelf: Boolean, val nsReturnsRetained: Boolean,
-        val isOptional: Boolean, val isInit: Boolean, val isDesginatedInitializer: Boolean
+        val isVariadic: Boolean, val isClass: Boolean, val nsConsumesSelf: Boolean, val nsReturnsRetained: Boolean,
+        val isOptional: Boolean, val isInit: Boolean, val isExplicitlyDesignatedInitializer: Boolean
 ) {
 
     fun returnsInstancetype(): Boolean = returnType is ObjCInstanceType
@@ -163,6 +195,7 @@ data class ObjCProperty(val name: String, val getter: ObjCMethod, val setter: Ob
 }
 
 abstract class ObjCClass(name: String) : ObjCClassOrProtocol(name) {
+    abstract val binaryName: String?
     abstract val baseClass: ObjCClass?
 }
 abstract class ObjCProtocol(name: String) : ObjCClassOrProtocol(name)
@@ -189,13 +222,16 @@ class FunctionDecl(val name: String, val parameters: List<Parameter>, val return
  */
 class TypedefDef(val aliased: Type, val name: String, override val location: Location) : TypeDeclaration
 
-abstract class ConstantDef(val name: String, val type: Type)
+abstract class MacroDef(val name: String)
+
+abstract class ConstantDef(name: String, val type: Type): MacroDef(name)
 class IntegerConstantDef(name: String, type: Type, val value: Long) : ConstantDef(name, type)
 class FloatingConstantDef(name: String, type: Type, val value: Double) : ConstantDef(name, type)
 class StringConstantDef(name: String, type: Type, val value: String) : ConstantDef(name, type)
 
-class GlobalDecl(val name: String, val type: Type, val isConst: Boolean)
+class WrappedMacroDef(name: String, val type: Type) : MacroDef(name)
 
+class GlobalDecl(val name: String, val type: Type, val isConst: Boolean)
 
 /**
  * C type.
@@ -206,7 +242,11 @@ interface PrimitiveType : Type
 
 object CharType : PrimitiveType
 
-object BoolType : PrimitiveType
+open class BoolType: PrimitiveType
+
+object CBoolType : BoolType()
+
+object ObjCBoolType : BoolType()
 
 data class IntegerType(val size: Int, val isSigned: Boolean, val spelling: String) : PrimitiveType
 
@@ -230,6 +270,7 @@ interface ArrayType : Type {
 
 data class ConstArrayType(override val elemType: Type, val length: Long) : ArrayType
 data class IncompleteArrayType(override val elemType: Type) : ArrayType
+data class VariableArrayType(override val elemType: Type) : ArrayType
 
 data class Typedef(val def: TypedefDef) : Type
 

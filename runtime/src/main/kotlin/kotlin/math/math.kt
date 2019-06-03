@@ -1,31 +1,9 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.math
-
-// region ================ Constants ========================================
-
-/** Ratio of the circumference of a circle to its diameter, approximately 3.14159. */
-@SinceKotlin("1.2")
-public const val PI: Double = 3.141592653589793
-/** Base of the natural logarithms, approximately 2.71828. */
-@SinceKotlin("1.2")
-public const val E: Double = 2.718281828459045
-
-// endregion
 
 // region ================ Double Math ========================================
 
@@ -36,7 +14,7 @@ public const val E: Double = 2.718281828459045
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_sin")
-external public fun sin(x: Double): Double
+external public actual fun sin(x: Double): Double
 
 /** Computes the cosine of the angle [x] given in radians.
  *
@@ -45,7 +23,7 @@ external public fun sin(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_cos")
-external public fun cos(x: Double): Double
+external public actual fun cos(x: Double): Double
 
 /** Computes the tangent of the angle [x] given in radians.
  *
@@ -54,7 +32,7 @@ external public fun cos(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_tan")
-external public fun tan(x: Double): Double
+external public actual fun tan(x: Double): Double
 
 /**
  * Computes the arc sine of the value [x];
@@ -65,7 +43,7 @@ external public fun tan(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_asin")
-external public fun asin(x: Double): Double
+external public actual fun asin(x: Double): Double
 
 /**
  * Computes the arc cosine of the value [x];
@@ -76,7 +54,7 @@ external public fun asin(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_acos")
-external public fun acos(x: Double): Double
+external public actual fun acos(x: Double): Double
 
 /**
  * Computes the arc tangent of the value [x];
@@ -87,7 +65,7 @@ external public fun acos(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_atan")
-external public fun atan(x: Double): Double
+external public actual fun atan(x: Double): Double
 
 /**
  * Returns the angle `theta` of the polar coordinates `(r, theta)` that correspond
@@ -107,7 +85,7 @@ external public fun atan(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_atan2")
-external public fun atan2(y: Double, x: Double): Double
+external public actual fun atan2(y: Double, x: Double): Double
 
 /**
  * Computes the hyperbolic sine of the value [x].
@@ -119,7 +97,7 @@ external public fun atan2(y: Double, x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_sinh")
-external public fun sinh(x: Double): Double
+external public actual fun sinh(x: Double): Double
 
 /**
  * Computes the hyperbolic cosine of the value [x].
@@ -130,7 +108,7 @@ external public fun sinh(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_cosh")
-external public fun cosh(x: Double): Double
+external public actual fun cosh(x: Double): Double
 
 /**
  * Computes the hyperbolic tangent of the value [x].
@@ -142,7 +120,7 @@ external public fun cosh(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_tanh")
-external public fun tanh(x: Double): Double
+external public actual fun tanh(x: Double): Double
 
 /**
  * Computes the inverse hyperbolic sine of the value [x].
@@ -156,7 +134,7 @@ external public fun tanh(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_asinh")
-external public fun asinh(x: Double): Double
+external public actual fun asinh(x: Double): Double
 
 /**
  * Computes the inverse hyperbolic cosine of the value [x].
@@ -170,7 +148,7 @@ external public fun asinh(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_acosh")
-external public fun acosh(x: Double): Double
+external public actual fun acosh(x: Double): Double
 
 /**
  * Computes the inverse hyperbolic tangent of the value [x].
@@ -185,7 +163,7 @@ external public fun acosh(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_atanh")
-external public fun atanh(x: Double): Double
+external public actual fun atanh(x: Double): Double
 
 /**
  * Computes `sqrt(x^2 + y^2)` without intermediate overflow or underflow.
@@ -196,7 +174,7 @@ external public fun atanh(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_hypot")
-external public fun hypot(x: Double, y: Double): Double
+external public actual fun hypot(x: Double, y: Double): Double
 
 /**
  * Computes the positive square root of the value [x].
@@ -206,7 +184,7 @@ external public fun hypot(x: Double, y: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_sqrt")
-external public fun sqrt(x: Double): Double
+external public actual fun sqrt(x: Double): Double
 
 /**
  * Computes Euler's number `e` raised to the power of the value [x].
@@ -218,7 +196,7 @@ external public fun sqrt(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_exp")
-external public fun exp(x: Double): Double
+external public actual fun exp(x: Double): Double
 
 /**
  * Computes `exp(x) - 1`.
@@ -234,7 +212,7 @@ external public fun exp(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_expm1")
-external public fun expm1(x: Double): Double
+external public actual fun expm1(x: Double): Double
 
 /**
  * Computes the logarithm of the value [x] to the given [base].
@@ -249,7 +227,7 @@ external public fun expm1(x: Double): Double
  * See also logarithm functions for common fixed bases: [ln], [log10] and [log2].
  */
 @SinceKotlin("1.2")
-public fun log(x: Double, base: Double): Double {
+public actual fun log(x: Double, base: Double): Double {
     if (base <= 0.0 || base == 1.0) return Double.NaN
     return ln(x) / ln(base)
 }
@@ -265,25 +243,25 @@ public fun log(x: Double, base: Double): Double {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_ln")
-external public fun ln(x: Double): Double
+external public actual fun ln(x: Double): Double
 
 /**
  * Computes the common logarithm (base 10) of the value [x].
  *
- * @see [ln] function for special cases.
+ * @see [ln] actual function for special cases.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_log10")
-external public fun log10(x: Double): Double
+external public actual fun log10(x: Double): Double
 
 /**
  * Computes the binary logarithm (base 2) of the value [x].
  *
- * @see [ln] function for special cases.
+ * @see [ln] actual function for special cases.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_log2")
-external public fun log2(x: Double): Double
+external public actual fun log2(x: Double): Double
 
 /**
  * Computes `ln(x + 1)`.
@@ -301,31 +279,31 @@ external public fun log2(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_ln1p")
-external public fun ln1p(x: Double): Double
+external public actual fun ln1p(x: Double): Double
 
 /**
  * Rounds the given value [x] to an integer towards positive infinity.
 
- * @return the smallest double value that is greater than the given value [x] and is a mathematical integer.
+ * @return the smallest double value that is greater than or equal to the given value [x] and is a mathematical integer.
  *
  * Special cases:
  *   - `ceil(x)` is `x` where `x` is `NaN` or `+Inf` or `-Inf` or already a mathematical integer.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_ceil")
-external public fun ceil(x: Double): Double
+external public actual fun ceil(x: Double): Double
 
 /**
  * Rounds the given value [x] to an integer towards negative infinity.
 
- * @return the largest double value that is smaller than the given value [x] and is a mathematical integer.
+ * @return the largest double value that is smaller than or equal to the given value [x] and is a mathematical integer.
  *
  * Special cases:
  *   - `floor(x)` is `x` where `x` is `NaN` or `+Inf` or `-Inf` or already a mathematical integer.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_floor")
-external public fun floor(x: Double): Double
+external public actual fun floor(x: Double): Double
 
 /**
  * Rounds the given value [x] to an integer towards zero.
@@ -336,7 +314,7 @@ external public fun floor(x: Double): Double
  *   - `truncate(x)` is `x` where `x` is `NaN` or `+Inf` or `-Inf` or already a mathematical integer.
  */
 @SinceKotlin("1.2")
-public fun truncate(x: Double): Double = when {
+public actual fun truncate(x: Double): Double = when {
     x.isNaN() || x.isInfinite() -> x
     x > 0 -> floor(x)
     else -> ceil(x)
@@ -350,7 +328,7 @@ public fun truncate(x: Double): Double = when {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_round")
-external public fun round(x: Double): Double
+external public actual fun round(x: Double): Double
 
 /**
  * Returns the absolute value of the given value [x].
@@ -362,7 +340,7 @@ external public fun round(x: Double): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_abs")
-external public fun abs(x: Double): Double
+external public actual fun abs(x: Double): Double
 
 /**
  * Returns the sign of the given value [x]:
@@ -374,7 +352,7 @@ external public fun abs(x: Double): Double
  *   - `sign(NaN)` is `NaN`
  */
 @SinceKotlin("1.2")
-public fun sign(x: Double): Double = when {
+public actual fun sign(x: Double): Double = when {
     x.isNaN() -> Double.NaN
     x > 0 -> 1.0
     x < 0 -> -1.0
@@ -387,7 +365,7 @@ public fun sign(x: Double): Double = when {
  * If either value is `NaN`, then the result is `NaN`.
  */
 @SinceKotlin("1.2")
-public fun min(a: Double, b: Double): Double = when {
+public actual fun min(a: Double, b: Double): Double = when {
     a.isNaN() || b.isNaN() -> Double.NaN
     a == 0.0 && b == 0.0 -> if (a.signBit()) a else b   // -0.0 < +0.0
     else -> if (a < b) a else b
@@ -398,7 +376,7 @@ public fun min(a: Double, b: Double): Double = when {
  * If either value is `NaN`, then the result is `NaN`.
  */
 @SinceKotlin("1.2")
-public fun max(a: Double, b: Double): Double = when {
+public actual fun max(a: Double, b: Double): Double = when {
     a.isNaN() || b.isNaN() -> Double.NaN
     a == 0.0 && b == 0.0 -> if (!a.signBit()) a else b  // -0.0 < +0.0
     else -> if (a > b) a else b
@@ -419,7 +397,7 @@ public fun max(a: Double, b: Double): Double = when {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Double_pow")
-external public fun Double.pow(x: Double): Double
+external public actual fun Double.pow(x: Double): Double
 
 /**
  * Raises this value to the integer power [n].
@@ -427,7 +405,7 @@ external public fun Double.pow(x: Double): Double
  * See the other overload of [pow] for details.
  */
 @SinceKotlin("1.2")
-public fun Double.pow(n: Int): Double = pow(n.toDouble())
+public actual fun Double.pow(n: Int): Double = pow(n.toDouble())
 
 /**
  * Computes the remainder of division of this value by the [divisor] value according to the IEEE 754 standard.
@@ -451,10 +429,10 @@ external public fun Double.IEEErem(divisor: Double): Double
  * Special cases:
  *   - `NaN.absoluteValue` is `NaN`
  *
- * @see abs function
+ * @see abs actual function
  */
 @SinceKotlin("1.2")
-public val Double.absoluteValue: Double
+public actual val Double.absoluteValue: Double
     get() = abs(this)
 
 /**
@@ -467,7 +445,7 @@ public val Double.absoluteValue: Double
  *   - `NaN.sign` is `NaN`
  */
 @SinceKotlin("1.2")
-public val Double.sign: Double
+public actual val Double.sign: Double
     get() = sign(this)
 
 /**
@@ -477,13 +455,13 @@ public val Double.sign: Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Double_withSign")
-external public fun Double.withSign(sign: Double): Double
+external public actual fun Double.withSign(sign: Double): Double
 
 /**
  * Returns this value with the sign bit same as of the [sign] value.
  */
 @SinceKotlin("1.2")
-public fun Double.withSign(sign: Int): Double = withSign(sign.toDouble())
+public actual fun Double.withSign(sign: Int): Double = withSign(sign.toDouble())
 
 /**
  * Returns the ulp (unit in the last place) of this value.
@@ -496,7 +474,7 @@ public fun Double.withSign(sign: Int): Double = withSign(sign.toDouble())
  *   - `0.0.ulp` is `Double.MIN_VALUE`
  */
 @SinceKotlin("1.2")
-public val Double.ulp: Double
+public actual val Double.ulp: Double
     get() = when {
         isNaN() -> Double.NaN
         isInfinite() -> Double.POSITIVE_INFINITY
@@ -512,13 +490,13 @@ public val Double.ulp: Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Double_nextUp")
-external public fun Double.nextUp(): Double
+external public actual fun Double.nextUp(): Double
 /**
  * Returns the [Double] value nearest to this value in direction of negative infinity.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Double_nextDown")
-external public fun Double.nextDown(): Double
+external public actual fun Double.nextDown(): Double
 
 /**
  * Returns the [Double] value nearest to this value in direction from this value towards the value [to].
@@ -530,7 +508,7 @@ external public fun Double.nextDown(): Double
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Double_nextTowards")
-external public fun Double.nextTowards(to: Double): Double
+external public actual fun Double.nextTowards(to: Double): Double
 
 /**
  * Returns true if the sign of [this] value is negative and false otherwise
@@ -549,7 +527,7 @@ external private fun Double.signBit(): Boolean
  * @throws IllegalArgumentException when this value is `NaN`
  */
 @SinceKotlin("1.2")
-public fun Double.roundToInt(): Int = when {
+public actual fun Double.roundToInt(): Int = when {
     isNaN() -> throw IllegalArgumentException("Cannot round NaN value.")
     this > Int.MAX_VALUE -> Int.MAX_VALUE
     this < Int.MIN_VALUE -> Int.MIN_VALUE
@@ -567,7 +545,7 @@ public fun Double.roundToInt(): Int = when {
  * @throws IllegalArgumentException when this value is `NaN`
  */
 @SinceKotlin("1.2")
-public fun Double.roundToLong(): Long = when {
+public actual fun Double.roundToLong(): Long = when {
     isNaN() -> throw IllegalArgumentException("Cannot round NaN value.")
     this > Long.MAX_VALUE -> Long.MAX_VALUE
     this < Long.MIN_VALUE -> Long.MIN_VALUE
@@ -585,7 +563,7 @@ public fun Double.roundToLong(): Long = when {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_sinf")
-external public fun sin(x: Float): Float
+external public actual fun sin(x: Float): Float
 
 /** Computes the cosine of the angle [x] given in radians.
  *
@@ -594,7 +572,7 @@ external public fun sin(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_cosf")
-external public fun cos(x: Float): Float
+external public actual fun cos(x: Float): Float
 
 /** Computes the tangent of the angle [x] given in radians.
  *
@@ -603,7 +581,7 @@ external public fun cos(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_tanf")
-external public fun tan(x: Float): Float
+external public actual fun tan(x: Float): Float
 
 /**
  * Computes the arc sine of the value [x];
@@ -614,7 +592,7 @@ external public fun tan(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_asinf")
-external public fun asin(x: Float): Float
+external public actual fun asin(x: Float): Float
 
 /**
  * Computes the arc cosine of the value [x];
@@ -625,7 +603,7 @@ external public fun asin(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_acosf")
-external public fun acos(x: Float): Float
+external public actual fun acos(x: Float): Float
 
 /**
  * Computes the arc tangent of the value [x];
@@ -636,7 +614,7 @@ external public fun acos(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_atanf")
-external public fun atan(x: Float): Float
+external public actual fun atan(x: Float): Float
 
 /**
  * Returns the angle `theta` of the polar coordinates `(r, theta)` that correspond
@@ -656,7 +634,7 @@ external public fun atan(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_atan2f")
-external public fun atan2(y: Float, x: Float): Float
+external public actual fun atan2(y: Float, x: Float): Float
 
 /**
  * Computes the hyperbolic sine of the value [x].
@@ -668,7 +646,7 @@ external public fun atan2(y: Float, x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_sinhf")
-external public fun sinh(x: Float): Float
+external public actual fun sinh(x: Float): Float
 
 /**
  * Computes the hyperbolic cosine of the value [x].
@@ -679,7 +657,7 @@ external public fun sinh(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_coshf")
-external public fun cosh(x: Float): Float
+external public actual fun cosh(x: Float): Float
 
 /**
  * Computes the hyperbolic tangent of the value [x].
@@ -691,7 +669,7 @@ external public fun cosh(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_tanhf")
-external public fun tanh(x: Float): Float
+external public actual fun tanh(x: Float): Float
 
 /**
  * Computes the inverse hyperbolic sine of the value [x].
@@ -705,7 +683,7 @@ external public fun tanh(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_asinhf")
-external public fun asinh(x: Float): Float
+external public actual fun asinh(x: Float): Float
 
 /**
  * Computes the inverse hyperbolic cosine of the value [x].
@@ -719,7 +697,7 @@ external public fun asinh(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_acoshf")
-external public fun acosh(x: Float): Float
+external public actual fun acosh(x: Float): Float
 
 /**
  * Computes the inverse hyperbolic tangent of the value [x].
@@ -734,7 +712,7 @@ external public fun acosh(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_atanhf")
-external public fun atanh(x: Float): Float
+external public actual fun atanh(x: Float): Float
 
 /**
  * Computes `sqrt(x^2 + y^2)` without intermediate overflow or underflow.
@@ -745,7 +723,7 @@ external public fun atanh(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_hypotf")
-external public fun hypot(x: Float, y: Float): Float
+external public actual fun hypot(x: Float, y: Float): Float
 
 /**
  * Computes the positive square root of the value [x].
@@ -755,7 +733,7 @@ external public fun hypot(x: Float, y: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_sqrtf")
-external public fun sqrt(x: Float): Float
+external public actual fun sqrt(x: Float): Float
 
 /**
  * Computes Euler's number `e` raised to the power of the value [x].
@@ -767,7 +745,7 @@ external public fun sqrt(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_expf")
-external public fun exp(x: Float): Float
+external public actual fun exp(x: Float): Float
 
 /**
  * Computes `exp(x) - 1`.
@@ -783,7 +761,7 @@ external public fun exp(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_expm1f")
-external public fun expm1(x: Float): Float
+external public actual fun expm1(x: Float): Float
 
 /**
  * Computes the logarithm of the value [x] to the given [base].
@@ -798,7 +776,7 @@ external public fun expm1(x: Float): Float
  * See also logarithm functions for common fixed bases: [ln], [log10] and [log2].
  */
 @SinceKotlin("1.2")
-public fun log(x: Float, base: Float): Float {
+public actual fun log(x: Float, base: Float): Float {
     if (base <= 0.0F || base == 1.0F) return Float.NaN
     return ln(x) / ln(base)
 }
@@ -814,25 +792,25 @@ public fun log(x: Float, base: Float): Float {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_lnf")
-external public fun ln(x: Float): Float
+external public actual fun ln(x: Float): Float
 
 /**
  * Computes the common logarithm (base 10) of the value [x].
  *
- * @see [ln] function for special cases.
+ * @see [ln] actual function for special cases.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_log10f")
-external public fun log10(x: Float): Float
+external public actual fun log10(x: Float): Float
 
 /**
  * Computes the binary logarithm (base 2) of the value [x].
  *
- * @see [ln] function for special cases.
+ * @see [ln] actual function for special cases.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_log2f")
-external public fun log2(x: Float): Float
+external public actual fun log2(x: Float): Float
 
 /**
  * Computes `ln(a + 1)`.
@@ -850,31 +828,31 @@ external public fun log2(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_ln1pf")
-external public fun ln1p(x: Float): Float
+external public actual fun ln1p(x: Float): Float
 
 /**
  * Rounds the given value [x] to an integer towards positive infinity.
 
- * @return the smallest Float value that is greater than the given value [x] and is a mathematical integer.
+ * @return the smallest Float value that is greater than or equal to the given value [x] and is a mathematical integer.
  *
  * Special cases:
  *   - `ceil(x)` is `x` where `x` is `NaN` or `+Inf` or `-Inf` or already a mathematical integer.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_ceilf")
-external public fun ceil(x: Float): Float
+external public actual fun ceil(x: Float): Float
 
 /**
  * Rounds the given value [x] to an integer towards negative infinity.
 
- * @return the largest Float value that is smaller than the given value [x] and is a mathematical integer.
+ * @return the largest Float value that is smaller than or equal to the given value [x] and is a mathematical integer.
  *
  * Special cases:
  *   - `floor(x)` is `x` where `x` is `NaN` or `+Inf` or `-Inf` or already a mathematical integer.
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_floorf")
-external public fun floor(x: Float): Float
+external public actual fun floor(x: Float): Float
 
 /**
  * Rounds the given value [x] to an integer towards zero.
@@ -885,7 +863,7 @@ external public fun floor(x: Float): Float
  *   - `truncate(x)` is `x` where `x` is `NaN` or `+Inf` or `-Inf` or already a mathematical integer.
  */
 @SinceKotlin("1.2")
-public fun truncate(x: Float): Float = when {
+public actual fun truncate(x: Float): Float = when {
     x.isNaN() || x.isInfinite() -> x
     x > 0 -> floor(x)
     else -> ceil(x)
@@ -899,7 +877,7 @@ public fun truncate(x: Float): Float = when {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_roundf")
-external public fun round(x: Float): Float
+external public actual fun round(x: Float): Float
 
 
 /**
@@ -912,7 +890,7 @@ external public fun round(x: Float): Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_absf")
-external public fun abs(x: Float): Float
+external public actual fun abs(x: Float): Float
 
 /**
  * Returns the sign of the given value [x]:
@@ -924,7 +902,7 @@ external public fun abs(x: Float): Float
  *   - `sign(NaN)` is `NaN`
  */
 @SinceKotlin("1.2")
-public fun sign(x: Float): Float = when {
+public actual fun sign(x: Float): Float = when {
     x.isNaN() -> Float.NaN
     x > 0 -> 1.0f
     x < 0 -> -1.0f
@@ -937,7 +915,7 @@ public fun sign(x: Float): Float = when {
  * If either value is `NaN`, then the result is `NaN`.
  */
 @SinceKotlin("1.2")
-public fun min(a: Float, b: Float): Float = when {
+public actual fun min(a: Float, b: Float): Float = when {
     a.isNaN() || b.isNaN() -> Float.NaN
     a == 0.0f && b == 0.0f -> if (a.signBit()) a else b   // -0.0 < +0.0
     else -> if (a < b) a else b
@@ -948,7 +926,7 @@ public fun min(a: Float, b: Float): Float = when {
  * If either value is `NaN`, then the result is `NaN`.
  */
 @SinceKotlin("1.2")
-public fun max(a: Float, b: Float): Float = when {
+public actual fun max(a: Float, b: Float): Float = when {
     a.isNaN() || b.isNaN() -> Float.NaN
     a == 0.0f && b == 0.0f -> if (!a.signBit()) a else b   // -0.0 < +0.0
     else -> if (a > b) a else b
@@ -969,7 +947,7 @@ public fun max(a: Float, b: Float): Float = when {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Float_pow")
-external public fun Float.pow(x: Float): Float
+external public actual fun Float.pow(x: Float): Float
 
 /**
  * Raises this value to the integer power [n].
@@ -977,7 +955,7 @@ external public fun Float.pow(x: Float): Float
  * See the other overload of [pow] for details.
  */
 @SinceKotlin("1.2")
-public fun Float.pow(n: Int): Float = pow(n.toFloat())
+public actual fun Float.pow(n: Int): Float = pow(n.toFloat())
 
 /**
  * Computes the remainder of division of this value by the [divisor] value according to the IEEE 754 standard.
@@ -1001,10 +979,10 @@ external public fun Float.IEEErem(divisor: Float): Float
  * Special cases:
  *   - `NaN.absoluteValue` is `NaN`
  *
- * @see abs function
+ * @see abs actual function
  */
 @SinceKotlin("1.2")
-public val Float.absoluteValue: Float
+public actual val Float.absoluteValue: Float
     get() = abs(this)
 
 /**
@@ -1017,7 +995,7 @@ public val Float.absoluteValue: Float
  *   - `NaN.sign` is `NaN`
  */
 @SinceKotlin("1.2")
-public val Float.sign: Float
+public actual val Float.sign: Float
     get() = sign(this)
 
 /**
@@ -1027,12 +1005,12 @@ public val Float.sign: Float
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_Float_withSign")
-external public fun Float.withSign(sign: Float): Float
+external public actual fun Float.withSign(sign: Float): Float
 /**
  * Returns this value with the sign bit same as of the [sign] value.
  */
 @SinceKotlin("1.2")
-public fun Float.withSign(sign: Int): Float = withSign(sign.toFloat())
+public actual fun Float.withSign(sign: Int): Float = withSign(sign.toFloat())
 
 @SinceKotlin("1.2")
 public val Float.ulp: Float
@@ -1088,7 +1066,7 @@ external private fun Float.signBit(): Boolean
  * @throws IllegalArgumentException when this value is `NaN`
  */
 @SinceKotlin("1.2")
-public fun Float.roundToInt(): Int = when {
+public actual fun Float.roundToInt(): Int = when {
     isNaN() -> throw IllegalArgumentException("Cannot round NaN value.")
     this > Int.MAX_VALUE -> Int.MAX_VALUE
     this < Int.MIN_VALUE -> Int.MIN_VALUE
@@ -1106,7 +1084,7 @@ public fun Float.roundToInt(): Int = when {
  * @throws IllegalArgumentException when this value is `NaN`
  */
 @SinceKotlin("1.2")
-public fun Float.roundToLong(): Long = when {
+public actual fun Float.roundToLong(): Long = when {
     isNaN() -> throw IllegalArgumentException("Cannot round NaN value.")
     this > Long.MAX_VALUE -> Long.MAX_VALUE
     this < Long.MIN_VALUE -> Long.MIN_VALUE
@@ -1127,19 +1105,19 @@ public fun Float.roundToLong(): Long = when {
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_absi")
-external public fun abs(n: Int): Int
+external public actual fun abs(n: Int): Int
 
 /**
  * Returns the smaller of two values.
  */
 @SinceKotlin("1.2")
-public fun min(a: Int, b: Int): Int = if (a < b) a else b
+public actual fun min(a: Int, b: Int): Int = if (a < b) a else b
 
 /**
  * Returns the greater of two values.
  */
 @SinceKotlin("1.2")
-public fun max(a: Int, b: Int): Int = if (a > b) a else b
+public actual fun max(a: Int, b: Int): Int = if (a > b) a else b
 
 /**
  * Returns the absolute value of this value.
@@ -1147,10 +1125,10 @@ public fun max(a: Int, b: Int): Int = if (a > b) a else b
  * Special cases:
  *   - `Int.MIN_VALUE.absoluteValue` is `Int.MIN_VALUE` due to an overflow
  *
- * @see abs function
+ * @see abs actual function
  */
 @SinceKotlin("1.2")
-public val Int.absoluteValue: Int
+public actual val Int.absoluteValue: Int
     get() = abs(this)
 
 /**
@@ -1160,7 +1138,7 @@ public val Int.absoluteValue: Int
  *   - `1` if the value is positive
  */
 @SinceKotlin("1.2")
-public val Int.sign: Int
+public actual val Int.sign: Int
     get() = when {
         this < 0 -> -1
         this > 0 -> 1
@@ -1178,19 +1156,19 @@ public val Int.sign: Int
  */
 @SinceKotlin("1.2")
 @SymbolName("Kotlin_math_absl")
-external public fun abs(n: Long): Long
+external public actual fun abs(n: Long): Long
 
 /**
  * Returns the smaller of two values.
  */
 @SinceKotlin("1.2")
-public fun min(a: Long, b: Long): Long = if (a < b) a else b
+public actual fun min(a: Long, b: Long): Long = if (a < b) a else b
 
 /**
  * Returns the greater of two values.
  */
 @SinceKotlin("1.2")
-public fun max(a: Long, b: Long): Long = if (a > b) a else b
+public actual fun max(a: Long, b: Long): Long = if (a > b) a else b
 
 /**
  * Returns the absolute value of this value.
@@ -1198,10 +1176,10 @@ public fun max(a: Long, b: Long): Long = if (a > b) a else b
  * Special cases:
  *   - `Long.MIN_VALUE.absoluteValue` is `Long.MIN_VALUE` due to an overflow
  *
- * @see abs function
+ * @see abs actual function
  */
 @SinceKotlin("1.2")
-public val Long.absoluteValue: Long
+public actual val Long.absoluteValue: Long
     get() = abs(this)
 
 /**
@@ -1211,7 +1189,7 @@ public val Long.absoluteValue: Long
  *   - `1` if the value is positive
  */
 @SinceKotlin("1.2")
-public val Long.sign: Int
+public actual val Long.sign: Int
     get() = when {
         this < 0 -> -1
         this > 0 -> 1

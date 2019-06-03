@@ -3,11 +3,8 @@ package org.jetbrains.kotlin
 import groovy.lang.Closure
 import org.gradle.api.Action
 import org.gradle.api.DefaultTask
-import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.SourceSet
-import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.TaskAction
 
 import org.jetbrains.kotlin.konan.target.*
@@ -31,10 +28,11 @@ open class FrameworkTest : DefaultTask() {
     @Input
     lateinit var frameworkName: String
 
-    private val testOutput by lazy {
-        ((project.findProperty("sourceSets") as SourceSetContainer)
-                .getByName("testOutputFramework") as SourceSet).output.dirs.singleFile.absolutePath
-                ?: throw RuntimeException("Empty sourceSet")
+    @Input
+    var fullBitcode: Boolean = false
+
+    private val testOutput: String by lazy {
+        project.file(project.property("testOutputFramework")!!).absolutePath
     }
 
     override fun configure(config: Closure<*>): Task {
@@ -54,9 +52,11 @@ open class FrameworkTest : DefaultTask() {
 
     @TaskAction
     fun run() {
-        val frameworkPath = "$testOutput/$frameworkName/${project.testTarget().name}"
-
-        codesign(project, Paths.get(frameworkPath, "$frameworkName.framework").toString())
+        val frameworkParentDirPath = "$testOutput/$frameworkName/${project.testTarget().name}"
+        val frameworkPath = "$frameworkParentDirPath/$frameworkName.framework"
+        val frameworkBinaryPath = "$frameworkPath/$frameworkName"
+        validateBitcodeEmbedding(frameworkBinaryPath)
+        codesign(project, frameworkPath)
 
         // create a test provider and get main entry point
         val provider = Paths.get(testOutput, frameworkName, "provider.swift")
@@ -76,7 +76,7 @@ open class FrameworkTest : DefaultTask() {
         // Compile swift sources
         val sources = swiftSources.map { Paths.get(it).toString() } +
                 listOf(provider.toString(), swiftMain)
-        val options = listOf("-g", "-Xlinker", "-rpath", "-Xlinker", frameworkPath, "-F", frameworkPath)
+        val options = listOf("-g", "-Xlinker", "-rpath", "-Xlinker", frameworkParentDirPath, "-F", frameworkParentDirPath)
         val testExecutable = Paths.get(testOutput, frameworkName, "swiftTestExecutable")
         swiftc(sources, options, testExecutable)
 
@@ -84,9 +84,30 @@ open class FrameworkTest : DefaultTask() {
     }
 
     private fun runTest(testExecutable: Path) {
+        val target = project.testTarget()
+        val platform = project.platformManager().platform(target)
+        val configs = platform.configurables as AppleConfigurables
+        val swiftPlatform = when (target) {
+            KonanTarget.IOS_X64 -> "iphonesimulator"
+            KonanTarget.IOS_ARM32, KonanTarget.IOS_ARM64 -> "iphoneos"
+            KonanTarget.MACOS_X64 -> "macosx"
+            else -> throw IllegalStateException("Test target $target is not supported")
+        }
+        val libraryPath = configs.absoluteTargetToolchain + "/usr/lib/swift/$swiftPlatform"
         val executor = (project.convention.plugins["executor"] as? ExecutorService)
                 ?: throw RuntimeException("Executor wasn't found")
-        val (stdOut, stdErr, exitCode) = runProcess(executor = executor::execute,
+        // Hopefully, lexicographical comparison will work.
+        val newMacos = System.getProperty("os.version").compareTo("10.14.4") >= 0
+        val dyldLibraryPathKey = if (target == KonanTarget.IOS_X64) {
+            "SIMCTL_CHILD_DYLD_LIBRARY_PATH"
+        } else {
+            "DYLD_LIBRARY_PATH"
+        }
+        val environment = if (newMacos) emptyMap() else mapOf(
+                dyldLibraryPathKey to libraryPath
+        )
+        val (stdOut, stdErr, exitCode) = runProcess(
+                executor = executor.add(Action { it.environment = environment })::execute,
                 executable = testExecutable.toString())
 
         println("""
@@ -111,7 +132,8 @@ open class FrameworkTest : DefaultTask() {
         }
 
         val args = listOf("-sdk", configs.absoluteTargetSysRoot, "-target", swiftTarget) +
-                options + "-o" + output.toString() + sources
+                options + "-o" + output.toString() + sources +
+                if (fullBitcode) listOf("-embed-bitcode", "-Xlinker", "-bitcode_verify") else listOf("-embed-bitcode-marker")
 
         val (stdOut, stdErr, exitCode) = runProcess(executor = localExecutor(project), executable = compiler, args = args)
 
@@ -123,5 +145,33 @@ open class FrameworkTest : DefaultTask() {
             """.trimMargin())
         check(exitCode == 0, { "Compilation failed" })
         check(output.toFile().exists(), { "Compiler swiftc hasn't produced an output file: $output" })
+    }
+
+    private fun validateBitcodeEmbedding(frameworkBinary: String) {
+        // Check only the full bitcode embedding for now.
+        if (!fullBitcode) {
+            return
+        }
+        val testTarget = project.testTarget()
+        val configurables = project.platformManager().platform(testTarget).configurables as AppleConfigurables
+
+        val bitcodeBuildTool = "${configurables.absoluteAdditionalToolsDir}/bin/bitcode-build-tool"
+        val ldPath = "${configurables.absoluteTargetToolchain}/usr/bin/ld"
+        val sdk = when (testTarget) {
+            KonanTarget.IOS_X64 -> return // bitcode-build-tool doesn't support iPhone Simulator.
+            KonanTarget.IOS_ARM64, KonanTarget.IOS_ARM32 -> Xcode.current.iphoneosSdk
+            KonanTarget.MACOS_X64 -> Xcode.current.macosxSdk
+            else -> error("Cannot validate bitcode for test target $testTarget")
+        }
+
+        val args = listOf("--sdk", sdk, "-v", "-t", ldPath, frameworkBinary)
+        val (stdOut, stdErr, exitCode) = runProcess(executor = localExecutor(project), executable = bitcodeBuildTool, args = args)
+        check(exitCode == 0) {
+            """
+            |bitcode-build-tool failed:
+            |stdout: $stdOut
+            |stderr: $stdErr
+            """.trimMargin()
+        }
     }
 }

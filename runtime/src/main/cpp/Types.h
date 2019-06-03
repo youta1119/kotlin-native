@@ -26,6 +26,7 @@
 
 #include <deque>
 #include <string>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -36,15 +37,21 @@
 #include "TypeInfo.h"
 
 // Note that almost all types are signed.
-typedef uint8_t KBoolean;
+typedef bool KBoolean;
 typedef int8_t  KByte;
 typedef uint16_t KChar;
 typedef int16_t KShort;
 typedef int32_t KInt;
 typedef int64_t KLong;
+typedef uint8_t  KUByte;
+typedef uint16_t KUShort;
+typedef uint32_t KUInt;
+typedef uint64_t KULong;
 typedef float   KFloat;
 typedef double  KDouble;
 typedef void*   KNativePtr;
+
+typedef const void* KConstNativePtr;
 
 typedef ObjHeader* KRef;
 typedef const ObjHeader* KConstRef;
@@ -63,6 +70,8 @@ template<class Value>
 using KStdUnorderedSet = std::unordered_set<Value,
   std::hash<Value>, std::equal_to<Value>,
   KonanAllocator<Value>>;
+template<class Value, class Compare>
+using KStdOrderedSet = std::set<Value, Compare, KonanAllocator<Value>>;
 template<class Value>
 using KStdVector = std::vector<Value, KonanAllocator<Value>>;
 
@@ -85,6 +94,7 @@ extern const TypeInfo* theThrowableTypeInfo;
 extern const TypeInfo* theUnitTypeInfo;
 extern const TypeInfo* theForeignObjCObjectTypeInfo;
 extern const TypeInfo* theObjCObjectWrapperTypeInfo;
+extern const TypeInfo* theNativePtrArrayTypeInfo;
 
 KBoolean IsInstance(const ObjHeader* obj, const TypeInfo* type_info) RUNTIME_PURE;
 void CheckCast(const ObjHeader* obj, const TypeInfo* type_info);

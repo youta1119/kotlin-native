@@ -29,8 +29,9 @@ OBJ_GETTER(setupArgs, int argc, const char** argv) {
   ObjHeader* result = AllocArrayInstance(theArrayTypeInfo, argc - 1, OBJ_RESULT);
   ArrayHeader* array = result->array();
   for (int index = 1; index < argc; index++) {
-    CreateStringFromCString(
-      argv[index], ArrayAddressOfElementAt(array, index - 1));
+    ObjHolder result;
+    CreateStringFromCString(argv[index], result.slot());
+    UpdateHeapRef(ArrayAddressOfElementAt(array, index - 1), result.obj());
   }
   return result;
 }
@@ -44,8 +45,7 @@ extern "C" KInt Konan_run_start(int argc, const char** argv) {
     return Konan_start(args.obj());
 }
 
-extern "C" RUNTIME_USED int Konan_main(int argc, const char** argv) {
-
+extern "C" RUNTIME_USED int Init_and_run_start(int argc, const char** argv, int memoryDeInit) {
 #ifdef KONAN_NO_CTORS_SECTION
   extern void _Konan_constructors(void);
   _Konan_constructors();
@@ -55,9 +55,13 @@ extern "C" RUNTIME_USED int Konan_main(int argc, const char** argv) {
 
   KInt exitStatus = Konan_run_start(argc, argv);
 
-  Kotlin_deinitRuntimeIfNeeded();
+  if (memoryDeInit) Kotlin_deinitRuntimeIfNeeded();
 
   return exitStatus;
+}
+
+extern "C" RUNTIME_USED int Konan_main(int argc, const char** argv) {
+    return Init_and_run_start(argc, argv, 1);
 }
 
 #ifdef KONAN_WASM
@@ -66,17 +70,13 @@ extern "C" RUNTIME_USED int Konan_main(int argc, const char** argv) {
 extern "C" int Konan_js_arg_size(int index);
 extern "C" int Konan_js_fetch_arg(int index, char* ptr);
 
-extern "C" RUNTIME_USED int Konan_js_main(int argc, int memoryInit) {
+extern "C" RUNTIME_USED int Konan_js_main(int argc, int memoryDeInit) {
     char** argv = (char**)konan::calloc(1, argc);
     for (int i = 0; i< argc; ++i) {
         argv[i] = (char*)konan::calloc(1, Konan_js_arg_size(i));
         Konan_js_fetch_arg(i, argv[i]);
     }
-    if (memoryInit) {
-        return Konan_main(argc, (const char**)argv);
-    } else {
-        return Konan_run_start(argc, (const char**)argv);
-    }
+    return Init_and_run_start(argc, (const char**)argv, memoryDeInit);
 }
 
 #endif 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
+ * Copyright 2010-2019 JetBrains s.r.o.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,18 @@
 
 apply plugin: "cpp"
 apply plugin: "c"
+
+buildscript {
+  ext.rootBuildDirectory = file('..')
+
+  apply from: "$rootBuildDirectory/gradle/kotlinGradlePlugin.gradle"
+
+  dependencies {
+    classpath "org.jetbrains.kotlin:kotlin-stdlib:$buildKotlinVersion"
+    classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
+  }
+}
+import org.jetbrains.kotlin.konan.target.ClangArgs
 
 model {
   components {
@@ -34,15 +46,10 @@ model {
     }
   }
 
-  /* HACK over gradle 4.4, it adds /usr/include, that affects our --sysroot flag */
   toolChains {
     clang(Clang) {
       eachPlatform {
-        cppCompiler.withArguments { args ->
-          args.remove "/usr/include"
-          if (isLinux())
-            args.remove "/usr/include/x86_64-linux-gnu"
-        }
+        cppCompiler.withArguments(ClangArgs.&filterGradleNativeSoftwareFlags)
       }
     }
   }

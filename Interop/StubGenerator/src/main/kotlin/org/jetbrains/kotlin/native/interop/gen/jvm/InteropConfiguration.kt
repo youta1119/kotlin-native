@@ -16,6 +16,7 @@
 
 package org.jetbrains.kotlin.native.interop.gen.jvm
 
+import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.native.interop.indexer.NativeLibrary
 
 /**
@@ -25,8 +26,11 @@ class InteropConfiguration(
         val library: NativeLibrary,
         val pkgName: String,
         val excludedFunctions: Set<String>,
+        val excludedMacros: Set<String>,
         val strictEnums: Set<String>,
         val nonStrictEnums: Set<String>,
         val noStringConversion: Set<String>,
-        val exportForwardDeclarations: List<String>
+        val exportForwardDeclarations: List<String>,
+        val disableDesignatedInitializerChecks: Boolean,
+        val target: KonanTarget
 )

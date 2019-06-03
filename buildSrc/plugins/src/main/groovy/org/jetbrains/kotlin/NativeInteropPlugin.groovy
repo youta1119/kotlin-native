@@ -127,7 +127,7 @@ class NamedNativeInteropConfig implements Named {
         dependsOn(task)
 
         final Project prj;
-        final String taskName;
+        String taskName;
         int index = task.lastIndexOf(':')
         if (index != -1) {
             prj = project.project(task.substring(0, index))
@@ -222,7 +222,7 @@ class NamedNativeInteropConfig implements Named {
 
                 args '-generated', generatedSrcDir
                 args '-natives', nativeLibsDir
-                args '-temporaryFilesDir', temporaryFilesDir
+                args '-Xtemporary-files-dir', temporaryFilesDir
                 args '-flavor', this.flavor
                 // Uncomment to debug.
                 // args '-verbose', 'true'
@@ -247,15 +247,11 @@ class NamedNativeInteropConfig implements Named {
                 environment['PATH'] = project.files(project.hostPlatform.clang.clangPaths).asPath +
                         File.pathSeparator + environment['PATH']
 
-                args compilerOpts.collectMany { ['-copt', it] }
-                args linkerOpts.collectMany { ['-lopt', it] }
+                args compilerOpts.collectMany { ['-compiler-option', it] }
+                args linkerOpts.collectMany { ['-linker-option', it] }
 
                 headers.each {
-                    args '-h', it
-                }
-
-                if (project.hasProperty('shims')) {
-                    args '-shims', project.ext.shims
+                    args '-header', it
                 }
 
             }

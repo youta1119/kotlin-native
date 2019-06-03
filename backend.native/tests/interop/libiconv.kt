@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import kotlinx.cinterop.*
 import platform.iconv.*
 import platform.posix.size_tVar
@@ -22,8 +27,8 @@ fun main(args: Array<String>) {
         val destPtr = alloc<CArrayPointerVar<ByteVar>>()
         destPtr.value = destBytes
 
-        sourceLength.value = sourceByteArray.size.signExtend();
-        destLength.value = golden.size.signExtend();
+        sourceLength.value = sourceByteArray.size.convert()
+        destLength.value = golden.size.convert()
 
         val conversion = iconv_open("UTF-8", "LATIN1")
 

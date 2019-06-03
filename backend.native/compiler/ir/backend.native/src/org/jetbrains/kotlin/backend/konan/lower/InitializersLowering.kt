@@ -1,42 +1,30 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan.lower
 
 import org.jetbrains.kotlin.backend.common.ClassLoweringPass
 import org.jetbrains.kotlin.backend.common.CommonBackendContext
+import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.backend.common.ir.createDispatchReceiverParameter
+import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
+import org.jetbrains.kotlin.backend.common.lower.irBlockBody
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
-import org.jetbrains.kotlin.descriptors.CallableMemberDescriptor
-import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.descriptors.SourceElement
-import org.jetbrains.kotlin.descriptors.Visibilities
-import org.jetbrains.kotlin.descriptors.annotations.Annotations
-import org.jetbrains.kotlin.descriptors.impl.SimpleFunctionDescriptorImpl
+import org.jetbrains.kotlin.backend.konan.isNonGeneratedAnnotation
+import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.ir.IrStatement
+import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
-import org.jetbrains.kotlin.ir.util.addChild
-import org.jetbrains.kotlin.ir.util.createParameterDeclarations
-import org.jetbrains.kotlin.ir.util.transformFlat
+import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
-import org.jetbrains.kotlin.js.descriptorUtils.hasPrimaryConstructor
 
 internal class InitializersLowering(val context: CommonBackendContext) : ClassLoweringPass {
 
@@ -53,8 +41,8 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
 
         fun lowerInitializers() {
             collectAndRemoveInitializers()
-            val initializerMethodSymbol = createInitializerMethod()
-            lowerConstructors(initializerMethodSymbol)
+            val initializeMethodSymbol = createInitializerMethod()
+            lowerConstructors(initializeMethodSymbol)
         }
 
         private fun collectAndRemoveInitializers() {
@@ -67,7 +55,7 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
 
                 override fun visitAnonymousInitializer(declaration: IrAnonymousInitializer): IrStatement {
                     initializers.add(IrBlockImpl(declaration.startOffset, declaration.endOffset,
-                            context.builtIns.unitType, STATEMENT_ORIGIN_ANONYMOUS_INITIALIZER, declaration.body.statements))
+                            context.irBuiltIns.unitType, STATEMENT_ORIGIN_ANONYMOUS_INITIALIZER, declaration.body.statements))
                     return declaration
                 }
 
@@ -75,11 +63,19 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
                     val initializer = declaration.initializer ?: return declaration
                     val startOffset = initializer.startOffset
                     val endOffset = initializer.endOffset
-                    initializers.add(IrBlockImpl(startOffset, endOffset, context.builtIns.unitType, STATEMENT_ORIGIN_ANONYMOUS_INITIALIZER,
+                    initializers.add(IrBlockImpl(startOffset, endOffset,
+                            context.irBuiltIns.unitType,
+                            STATEMENT_ORIGIN_ANONYMOUS_INITIALIZER,
                             listOf(
                                     IrSetFieldImpl(startOffset, endOffset, declaration.symbol,
-                                            IrGetValueImpl(startOffset, endOffset, irClass.thisReceiver!!.symbol),
-                                            initializer.expression, STATEMENT_ORIGIN_ANONYMOUS_INITIALIZER))))
+                                            IrGetValueImpl(
+                                                    startOffset, endOffset,
+                                                    irClass.thisReceiver!!.type, irClass.thisReceiver!!.symbol
+                                            ),
+                                            initializer.expression,
+                                            context.irBuiltIns.unitType,
+                                            STATEMENT_ORIGIN_ANONYMOUS_INITIALIZER)))
+                    )
                     declaration.initializer = null
                     return declaration
                 }
@@ -93,51 +89,66 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
         }
 
         private fun createInitializerMethod(): IrSimpleFunctionSymbol? {
-            if (irClass.descriptor.hasPrimaryConstructor())
+            if (irClass.declarations.any { it is IrConstructor && it.isPrimary })
                 return null // Place initializers in the primary constructor.
-            val initializerMethodDescriptor = SimpleFunctionDescriptorImpl.create(
-                    /* containingDeclaration        = */ irClass.descriptor,
-                    /* annotations                  = */ Annotations.EMPTY,
-                    /* name                         = */ "INITIALIZER".synthesizedName,
-                    /* kind                         = */ CallableMemberDescriptor.Kind.DECLARATION,
-                    /* source                       = */ SourceElement.NO_SOURCE)
-            initializerMethodDescriptor.initialize(
-                    /* receiverParameterType        = */ null,
-                    /* dispatchReceiverParameter    = */ irClass.descriptor.thisAsReceiverParameter,
-                    /* typeParameters               = */ listOf(),
-                    /* unsubstitutedValueParameters = */ listOf(),
-                    /* returnType                   = */ context.builtIns.unitType,
-                    /* modality                     = */ Modality.FINAL,
-                    /* visibility                   = */ Visibilities.PRIVATE)
+
             val startOffset = irClass.startOffset
             val endOffset = irClass.endOffset
-            val initializer = IrFunctionImpl(startOffset, endOffset, DECLARATION_ORIGIN_ANONYMOUS_INITIALIZER,
-                    initializerMethodDescriptor, IrBlockBodyImpl(startOffset, endOffset, initializers))
+            val initializeFun = WrappedSimpleFunctionDescriptor().let {
+                IrFunctionImpl(
+                        startOffset, endOffset,
+                        DECLARATION_ORIGIN_ANONYMOUS_INITIALIZER,
+                        IrSimpleFunctionSymbolImpl(it),
+                        "INITIALIZER".synthesizedName,
+                        Visibilities.PRIVATE,
+                        Modality.FINAL,
+                        context.irBuiltIns.unitType,
+                        isInline = false,
+                        isSuspend = false,
+                        isExternal = false,
+                        isTailrec = false
+                ).apply {
+                    it.bind(this)
+                    parent = irClass
+                    irClass.declarations.add(this)
 
-            initializer.createParameterDeclarations()
+                    createDispatchReceiverParameter()
 
-            initializers.forEach {
-                it.transformChildrenVoid(object : IrElementTransformerVoid() {
+                    body = IrBlockBodyImpl(startOffset, endOffset, initializers)
+                }
+            }
+
+            for (initializer in initializers) {
+                initializer.transformChildrenVoid(object : IrElementTransformerVoid() {
                     override fun visitGetValue(expression: IrGetValue): IrExpression {
                         if (expression.symbol == irClass.thisReceiver!!.symbol) {
                             return IrGetValueImpl(
                                     expression.startOffset,
                                     expression.endOffset,
-                                    initializer.dispatchReceiverParameter!!.symbol
+                                    initializeFun.dispatchReceiverParameter!!.type,
+                                    initializeFun.dispatchReceiverParameter!!.symbol
                             )
-                        } else {
-                            return expression
                         }
+                        return expression
                     }
                 })
+                initializer.patchDeclarationParents(initializeFun)
             }
 
-            irClass.addChild(initializer)
-
-            return initializer.symbol
+            return initializeFun.symbol
         }
 
-        private fun lowerConstructors(initializerMethodSymbol: IrSimpleFunctionSymbol?) {
+        private fun lowerConstructors(initializeMethodSymbol: IrSimpleFunctionSymbol?) {
+            if (irClass.kind == ClassKind.ANNOTATION_CLASS) {
+                if (irClass.isNonGeneratedAnnotation()) return
+
+                val irConstructor = irClass.declarations.filterIsInstance<IrConstructor>().single()
+                assert(irConstructor.body == null)
+                irConstructor.body = context.createIrBuilder(irConstructor.symbol).irBlockBody(irConstructor) {
+                    +irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.constructors.single())
+                    +IrInstanceInitializerCallImpl(startOffset, endOffset, irClass.symbol, context.irBuiltIns.unitType)
+                }
+            }
             irClass.transformChildrenVoid(object : IrElementTransformerVoid() {
 
                 override fun visitClass(declaration: IrClass): IrStatement {
@@ -146,32 +157,45 @@ internal class InitializersLowering(val context: CommonBackendContext) : ClassLo
                 }
 
                 override fun visitConstructor(declaration: IrConstructor): IrStatement {
-                    val blockBody = declaration.body as? IrBlockBody ?: throw AssertionError("Unexpected constructor body: ${declaration.body}")
+                    val blockBody = declaration.body as? IrBlockBody
+                            ?: throw AssertionError("Unexpected constructor body: ${declaration.body}")
 
                     blockBody.statements.transformFlat {
                         when {
                             it is IrInstanceInitializerCall -> {
-                                if (initializerMethodSymbol == null) {
-                                    assert(declaration.descriptor.isPrimary)
+                                if (initializeMethodSymbol == null) {
+                                    assert(declaration.isPrimary)
+                                    for (initializer in initializers)
+                                        initializer.patchDeclarationParents(declaration)
                                     initializers
                                 } else {
                                     val startOffset = it.startOffset
                                     val endOffset = it.endOffset
-                                    listOf(IrCallImpl(startOffset, endOffset, initializerMethodSymbol).apply {
-                                        dispatchReceiver = IrGetValueImpl(startOffset, endOffset, irClass.thisReceiver!!.symbol)
+                                    listOf(IrCallImpl(startOffset, endOffset,
+                                            context.irBuiltIns.unitType, initializeMethodSymbol
+                                    ).apply {
+                                        dispatchReceiver = IrGetValueImpl(
+                                                startOffset, endOffset,
+                                                irClass.thisReceiver!!.type, irClass.thisReceiver!!.symbol
+                                        )
                                     })
                                 }
                             }
-                        /**
-                         * IR for kotlin.Any is:
-                         * BLOCK_BODY
-                         *   DELEGATING_CONSTRUCTOR_CALL 'constructor Any()'
-                         *   INSTANCE_INITIALIZER_CALL classDescriptor='Any'
-                         *
-                         *   to avoid possible recursion we manually reject body generation for Any.
-                         */
-                            it is IrDelegatingConstructorCall && irClass.descriptor == context.builtIns.any
-                                    && it.descriptor == declaration.descriptor -> listOf()
+
+                            /**
+                             * IR for kotlin.Any is:
+                             * BLOCK_BODY
+                             *   DELEGATING_CONSTRUCTOR_CALL 'constructor Any()'
+                             *   INSTANCE_INITIALIZER_CALL classDescriptor='Any'
+                             *
+                             *   to avoid possible recursion we manually reject body generation for Any.
+                             */
+                            it is IrDelegatingConstructorCall
+                                    && irClass.symbol == context.irBuiltIns.anyClass
+                                    && it.symbol == declaration.symbol -> {
+                                listOf()
+                            }
+
                             else -> null
                         }
                     }

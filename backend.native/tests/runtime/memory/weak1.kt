@@ -1,7 +1,12 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package runtime.memory.weak1
 
 import kotlin.test.*
-import konan.ref.*
+import kotlin.native.ref.*
 
 class Node(var next: Node?)
 
@@ -10,6 +15,6 @@ class Node(var next: Node?)
     val node2 = Node(node1)
     node1.next = node2
 
-    konan.ref.WeakReference(node1)
+    kotlin.native.ref.WeakReference(node1)
     println("OK")
 }

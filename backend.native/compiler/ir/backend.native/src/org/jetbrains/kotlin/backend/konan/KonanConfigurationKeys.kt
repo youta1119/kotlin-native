@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan
@@ -23,26 +12,38 @@ import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 class KonanConfigKeys {
     companion object {
         // Keep the list lexically sorted.
-        val ABI_VERSION: CompilerConfigurationKey<Int> 
-                = CompilerConfigurationKey.create("current abi version")
         val CHECK_DEPENDENCIES: CompilerConfigurationKey<Boolean>
                 = CompilerConfigurationKey.create("check dependencies and download the missing ones")
+        val COMPATIBLE_COMPILER_VERSIONS: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey.create("compatible compiler versions")
         val DEBUG: CompilerConfigurationKey<Boolean>
                 = CompilerConfigurationKey.create("add debug information")
         val DISABLED_PHASES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("disable backend phases")
+        val BITCODE_EMBEDDING_MODE: CompilerConfigurationKey<BitcodeEmbedding.Mode>
+                = CompilerConfigurationKey.create("bitcode embedding mode")
+        val EMIT_LAZY_OBJC_HEADER_FILE: CompilerConfigurationKey<String?> =
+                CompilerConfigurationKey.create("output file to emit lazy Obj-C header")
         val ENABLE_ASSERTIONS: CompilerConfigurationKey<Boolean>
                 = CompilerConfigurationKey.create("enable runtime assertions in generated code")
         val ENABLED_PHASES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("enable backend phases")
         val ENTRY: CompilerConfigurationKey<String?>
                 = CompilerConfigurationKey.create("fully qualified main() name")
-        val GENERATE_TEST_RUNNER: CompilerConfigurationKey<Boolean>
+        val EXPORTED_LIBRARIES: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey.create<List<String>>("libraries included into produced framework API")
+        val FRAMEWORK_IMPORT_HEADERS: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey.create<List<String>>("headers imported to framework header")
+        val FRIEND_MODULES: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey.create<List<String>>("friend module paths")
+        val GENERATE_TEST_RUNNER: CompilerConfigurationKey<TestRunnerKind>
                 = CompilerConfigurationKey.create("generate test runner") 
         val INCLUDED_BINARY_FILES: CompilerConfigurationKey<List<String>>
                 = CompilerConfigurationKey.create("included binary file paths")
         val LIBRARY_FILES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("library file paths")
+        val LIBRARY_VERSION: CompilerConfigurationKey<String?>
+                = CompilerConfigurationKey.create("library version")
         val LINKER_ARGS: CompilerConfigurationKey<List<String>>
                 = CompilerConfigurationKey.create("additional linker arguments")
         val LIST_PHASES: CompilerConfigurationKey<Boolean> 
@@ -91,12 +92,12 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("override default runtime file path")
         val SOURCE_MAP: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("generate source map")
+        val STATIC_FRAMEWORK: CompilerConfigurationKey<Boolean>
+                = CompilerConfigurationKey.create("Produce a static library for a framework")
         val TARGET: CompilerConfigurationKey<String?>
                 = CompilerConfigurationKey.create("target we compile for")
         val TEMPORARY_FILES_DIR: CompilerConfigurationKey<String?>
                 = CompilerConfigurationKey.create("directory for temporary files")
-        val TIME_PHASES: CompilerConfigurationKey<Boolean> 
-                = CompilerConfigurationKey.create("time backend phases")
         val VERIFY_BITCODE: CompilerConfigurationKey<Boolean> 
                 = CompilerConfigurationKey.create("verify bitcode")
         val VERIFY_DESCRIPTORS: CompilerConfigurationKey<Boolean> 
@@ -105,6 +106,16 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("verify ir")
         val VERBOSE_PHASES: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("verbose backend phases")
+        val DEBUG_INFO_VERSION: CompilerConfigurationKey<Int>
+                = CompilerConfigurationKey.create("debug info format version")
+        val COVERAGE: CompilerConfigurationKey<Boolean>
+                = CompilerConfigurationKey.create("emit coverage info for sources")
+        val LIBRARIES_TO_COVER: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey.create<List<String>>("libraries that should be covered")
+        val PROFRAW_PATH: CompilerConfigurationKey<String?>
+                = CompilerConfigurationKey.create("path to *.profraw coverage output")
+        val OBJC_GENERICS: CompilerConfigurationKey<Boolean>
+                = CompilerConfigurationKey.create("write objc header with generics support")
     }
 }
 

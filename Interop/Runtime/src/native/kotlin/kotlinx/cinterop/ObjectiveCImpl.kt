@@ -17,14 +17,21 @@
 @file:Suppress("NOTHING_TO_INLINE")
 
 package kotlinx.cinterop
+import kotlin.native.*
+import kotlin.native.internal.ExportTypeInfo
+import kotlin.native.internal.TypedIntrinsic
+import kotlin.native.internal.IntrinsicType
 
 interface ObjCObject
 interface ObjCClass : ObjCObject
 interface ObjCClassOf<T : ObjCObject> : ObjCClass // TODO: T should be added to ObjCClass and all meta-classes instead.
 typealias ObjCObjectMeta = ObjCClass
 
+interface ObjCProtocol : ObjCObject
+
 @ExportTypeInfo("theForeignObjCObjectTypeInfo")
-internal open class ForeignObjCObject : konan.internal.ObjCObjectWrapper
+@kotlin.native.internal.Frozen
+internal open class ForeignObjCObject : kotlin.native.internal.ObjCObjectWrapper
 
 abstract class ObjCObjectBase protected constructor() : ObjCObject {
     @Target(AnnotationTarget.CONSTRUCTOR)
@@ -37,12 +44,12 @@ fun optional(): Nothing = throw RuntimeException("Do not call me!!!")
 
 @Deprecated(
         "Add @OverrideInit to constructor to make it override Objective-C initializer",
-        level = DeprecationLevel.WARNING
+        level = DeprecationLevel.ERROR
 )
-@konan.internal.Intrinsic
+@TypedIntrinsic(IntrinsicType.OBJC_INIT_BY)
 external fun <T : ObjCObjectBase> T.initBy(constructorCall: T): T
 
-@konan.internal.ExportForCompiler
+@kotlin.native.internal.ExportForCompiler
 private fun ObjCObjectBase.superInitCheck(superInitCallResult: ObjCObject?) {
     if (superInitCallResult == null)
         throw RuntimeException("Super initialization failed")
@@ -51,8 +58,7 @@ private fun ObjCObjectBase.superInitCheck(superInitCallResult: ObjCObject?) {
         throw UnsupportedOperationException("Super initializer has replaced object")
 }
 
-@Deprecated("Use plain Kotlin cast", ReplaceWith("this as T"), DeprecationLevel.WARNING)
-fun <T : Any?> Any?.uncheckedCast(): T = @Suppress("UNCHECKED_CAST") (this as T) // TODO: make private
+internal fun <T : Any?> Any?.uncheckedCast(): T = @Suppress("UNCHECKED_CAST") (this as T)
 
 @SymbolName("Kotlin_Interop_refFromObjC")
 external fun <T> interpretObjCPointerOrNull(objcPtr: NativePtr): T?
@@ -88,19 +94,17 @@ var <T : Any?> ObjCNotImplementedVar<T>.value: T
 typealias ObjCStringVarOf<T> = ObjCNotImplementedVar<T>
 typealias ObjCBlockVar<T> = ObjCNotImplementedVar<T>
 
-@konan.internal.Intrinsic external fun getReceiverOrSuper(receiver: NativePtr, superClass: NativePtr): COpaquePointer?
+@TypedIntrinsic(IntrinsicType.OBJC_CREATE_SUPER_STRUCT)
+@PublishedApi
+internal external fun createObjCSuperStruct(receiver: NativePtr, superClass: NativePtr): NativePtr
 
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.BINARY)
-annotation class ExternalObjCClass(val protocolGetter: String = "")
+annotation class ExternalObjCClass(val protocolGetter: String = "", val binaryName: String = "")
 
-@Target(AnnotationTarget.FUNCTION)
+@Target(AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY_GETTER, AnnotationTarget.PROPERTY_SETTER)
 @Retention(AnnotationRetention.BINARY)
-annotation class ObjCMethod(val selector: String, val bridge: String)
-
-@Target(AnnotationTarget.FUNCTION)
-@Retention(AnnotationRetention.BINARY)
-annotation class ObjCBridge(val selector: String, val encoding: String, val imp: String)
+annotation class ObjCMethod(val selector: String, val encoding: String, val isStret: Boolean = false)
 
 @Target(AnnotationTarget.CONSTRUCTOR)
 @Retention(AnnotationRetention.BINARY)
@@ -108,17 +112,22 @@ annotation class ObjCConstructor(val initSelector: String, val designated: Boole
 
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.BINARY)
-annotation class ObjCFactory(val bridge: String)
+annotation class ObjCFactory(val selector: String, val encoding: String, val isStret: Boolean = false)
 
 @Target(AnnotationTarget.FILE)
 @Retention(AnnotationRetention.BINARY)
 annotation class InteropStubs()
 
+@PublishedApi
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.SOURCE)
-private annotation class ObjCMethodImp(val selector: String, val encoding: String)
+internal annotation class ObjCMethodImp(val selector: String, val encoding: String)
 
-@konan.internal.ExportForCppRuntime("Kotlin_Interop_getObjCClass")
+@PublishedApi
+@TypedIntrinsic(IntrinsicType.OBJC_GET_SELECTOR)
+internal external fun objCGetSelector(selector: String): COpaquePointer
+
+@kotlin.native.internal.ExportForCppRuntime("Kotlin_Interop_getObjCClass")
 private fun getObjCClassByName(name: NativePtr): NativePtr {
     val result = objc_lookUpClass(name)
     if (result == nativeNullPtr) {
@@ -131,7 +140,7 @@ private fun getObjCClassByName(name: NativePtr): NativePtr {
     return result
 }
 
-@konan.internal.ExportForCompiler
+@kotlin.native.internal.ExportForCompiler
 private fun allocObjCObject(clazz: NativePtr): NativePtr {
     val rawResult = objc_allocWithZone(clazz)
     if (rawResult == nativeNullPtr) {
@@ -143,14 +152,20 @@ private fun allocObjCObject(clazz: NativePtr): NativePtr {
     return rawResult
 }
 
-@konan.internal.Intrinsic
-@konan.internal.ExportForCompiler
+@TypedIntrinsic(IntrinsicType.OBJC_GET_OBJC_CLASS)
+@kotlin.native.internal.ExportForCompiler
 private external fun <T : ObjCObject> getObjCClass(): NativePtr
 
-@konan.internal.Intrinsic external fun getMessenger(superClass: NativePtr): COpaquePointer?
-@konan.internal.Intrinsic external fun getMessengerLU(superClass: NativePtr): COpaquePointer?
+@PublishedApi
+@TypedIntrinsic(IntrinsicType.OBJC_GET_MESSENGER)
+internal external fun getMessenger(superClass: NativePtr): COpaquePointer?
 
-internal class ObjCWeakReferenceImpl : konan.ref.WeakReferenceImpl() {
+@PublishedApi
+@TypedIntrinsic(IntrinsicType.OBJC_GET_MESSENGER_STRET)
+internal external fun getMessengerStret(superClass: NativePtr): COpaquePointer?
+
+
+internal class ObjCWeakReferenceImpl : kotlin.native.ref.WeakReferenceImpl() {
     @SymbolName("Konan_ObjCInterop_getWeakReference")
     external override fun get(): Any?
 }
@@ -158,7 +173,7 @@ internal class ObjCWeakReferenceImpl : konan.ref.WeakReferenceImpl() {
 @SymbolName("Konan_ObjCInterop_initWeakReference")
 private external fun ObjCWeakReferenceImpl.init(objcPtr: NativePtr)
 
-@konan.internal.ExportForCppRuntime internal fun makeObjCWeakReferenceImpl(objcPtr: NativePtr): ObjCWeakReferenceImpl {
+@kotlin.native.internal.ExportForCppRuntime internal fun makeObjCWeakReferenceImpl(objcPtr: NativePtr): ObjCWeakReferenceImpl {
     val result = ObjCWeakReferenceImpl()
     result.init(objcPtr)
     return result
@@ -166,23 +181,17 @@ private external fun ObjCWeakReferenceImpl.init(objcPtr: NativePtr)
 
 // Konan runtme:
 
-@Deprecated("Use plain Kotlin cast of String to NSString", level = DeprecationLevel.WARNING)
+@Deprecated("Use plain Kotlin cast of String to NSString", level = DeprecationLevel.ERROR)
 @SymbolName("Kotlin_Interop_CreateNSStringFromKString")
 external fun CreateNSStringFromKString(str: String?): NativePtr
 
-@Deprecated("Use plain Kotlin cast of NSString to String", level = DeprecationLevel.WARNING)
+@Deprecated("Use plain Kotlin cast of NSString to String", level = DeprecationLevel.ERROR)
 @SymbolName("Kotlin_Interop_CreateKStringFromNSString")
 external fun CreateKStringFromNSString(ptr: NativePtr): String?
 
-@SymbolName("Kotlin_Interop_ObjCToString")
-private external fun ObjCToString(ptr: NativePtr): String
-
-@SymbolName("Kotlin_Interop_ObjCHashCode")
-private external fun ObjCHashCode(ptr: NativePtr): Int
-
-@SymbolName("Kotlin_Interop_ObjCEquals")
-private external fun ObjCEquals(ptr: NativePtr, otherPtr: NativePtr): Boolean
-
+@PublishedApi
+@SymbolName("Kotlin_Interop_CreateObjCObjectHolder")
+internal external fun createObjCObjectHolder(ptr: NativePtr): Any?
 
 // Objective-C runtime:
 

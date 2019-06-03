@@ -1,61 +1,147 @@
 /*
- * Copyright 2010-2018 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan
 
-import kotlinx.cinterop.toByte
 import llvm.*
+import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.backend.common.descriptors.WrappedValueParameterDescriptor
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
+import org.jetbrains.kotlin.descriptors.Modality
+import org.jetbrains.kotlin.descriptors.Visibilities
+import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
+import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
+import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
+import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
-import org.jetbrains.kotlin.ir.util.defaultType
-import org.jetbrains.kotlin.ir.util.getPropertyGetter
+import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
+import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
+import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.konan.target.KonanTarget
-import org.jetbrains.kotlin.types.KotlinType
+import org.jetbrains.kotlin.name.Name
 
-internal fun KonanSymbols.getTypeConversion(
-        actualType: KotlinType,
-        expectedType: KotlinType
+internal fun KonanSymbols.getTypeConversion(actualType: IrType, expectedType: IrType): IrSimpleFunctionSymbol? =
+        getTypeConversionImpl(actualType.getInlinedClassNative(), expectedType.getInlinedClassNative())
+
+private fun KonanSymbols.getTypeConversionImpl(
+        actualInlinedClass: IrClass?,
+        expectedInlinedClass: IrClass?
 ): IrSimpleFunctionSymbol? {
-    val actualValueType = actualType.correspondingValueType
-    val expectedValueType = expectedType.correspondingValueType
+    if (actualInlinedClass == expectedInlinedClass) return null
 
     return when {
-        actualValueType == expectedValueType -> null
+        actualInlinedClass == null && expectedInlinedClass == null -> null
+        actualInlinedClass != null && expectedInlinedClass == null -> context.getBoxFunction(actualInlinedClass)
+        actualInlinedClass == null && expectedInlinedClass != null -> context.getUnboxFunction(expectedInlinedClass)
+        else -> error("actual type is ${actualInlinedClass?.fqNameForIrSerialization}, expected ${expectedInlinedClass?.fqNameForIrSerialization}")
+    }?.symbol
+}
 
-        actualValueType == null && expectedValueType != null -> {
-            // This may happen in the following cases:
-            // 1.  `actualType` is `Nothing`;
-            // 2.  `actualType` is incompatible.
+internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.lazyMapMember { inlinedClass ->
+    assert(inlinedClass.isUsedAsBoxClass())
 
-            this.getUnboxFunction(expectedValueType)
-        }
+    val symbols = ir.symbols
 
-        actualValueType != null && expectedValueType == null -> {
-            this.boxFunctions[actualValueType]!!
-        }
+    val isNullable = inlinedClass.inlinedClassIsNullable()
+    val unboxedType = inlinedClass.defaultOrNullableType(isNullable)
+    val boxedType = symbols.any.owner.defaultOrNullableType(isNullable)
 
-        else -> throw IllegalArgumentException("actual type is $actualType, expected $expectedType")
+    val parameterType = unboxedType
+    val returnType = boxedType
+
+    val startOffset = inlinedClass.startOffset
+    val endOffset = inlinedClass.endOffset
+
+    val descriptor = WrappedSimpleFunctionDescriptor()
+    IrFunctionImpl(
+            startOffset, endOffset,
+            IrDeclarationOrigin.DEFINED,
+            IrSimpleFunctionSymbolImpl(descriptor),
+            Name.special("<box>"),
+            Visibilities.PUBLIC,
+            Modality.FINAL,
+            returnType,
+            isInline = false,
+            isExternal = false,
+            isTailrec = false,
+            isSuspend = false
+    ).also { function ->
+        function.valueParameters.add(WrappedValueParameterDescriptor().let {
+            IrValueParameterImpl(
+                    startOffset, endOffset,
+                    IrDeclarationOrigin.DEFINED,
+                    IrValueParameterSymbolImpl(it),
+                    Name.identifier("value"),
+                    index = 0,
+                    varargElementType = null,
+                    isCrossinline = false,
+                    type = parameterType,
+                    isNoinline = false
+            ).apply {
+                it.bind(this)
+                parent = function
+            }
+        })
+        descriptor.bind(function)
+        function.parent = inlinedClass
     }
 }
 
-internal fun KonanSymbols.getUnboxFunction(valueType: ValueType): IrSimpleFunctionSymbol =
-        this.unboxFunctions[valueType]
-                ?: this.boxClasses[valueType]!!.getPropertyGetter("value")!! as IrSimpleFunctionSymbol
+internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.lazyMapMember { inlinedClass ->
+    assert(inlinedClass.isUsedAsBoxClass())
 
+    val symbols = ir.symbols
+
+    val isNullable = inlinedClass.inlinedClassIsNullable()
+    val unboxedType = inlinedClass.defaultOrNullableType(isNullable)
+    val boxedType = symbols.any.owner.defaultOrNullableType(isNullable)
+
+    val parameterType = boxedType
+    val returnType = unboxedType
+
+    val startOffset = inlinedClass.startOffset
+    val endOffset = inlinedClass.endOffset
+
+    val descriptor = WrappedSimpleFunctionDescriptor()
+    IrFunctionImpl(
+            startOffset, endOffset,
+            IrDeclarationOrigin.DEFINED,
+            IrSimpleFunctionSymbolImpl(descriptor),
+            Name.special("<unbox>"),
+            Visibilities.PUBLIC,
+            Modality.FINAL,
+            returnType,
+            isInline = false,
+            isExternal = false,
+            isTailrec = false,
+            isSuspend = false
+    ).also { function ->
+        function.valueParameters.add(WrappedValueParameterDescriptor().let {
+            IrValueParameterImpl(
+                    startOffset, endOffset,
+                    IrDeclarationOrigin.DEFINED,
+                    IrValueParameterSymbolImpl(it),
+                    Name.identifier("value"),
+                    index = 0,
+                    varargElementType = null,
+                    isCrossinline = false,
+                    type = parameterType,
+                    isNoinline = false
+            ).apply {
+                it.bind(this)
+                parent = function
+            }
+        })
+        descriptor.bind(function)
+        function.parent = inlinedClass
+    }
+}
 
 /**
  * Initialize static boxing.
@@ -63,13 +149,11 @@ internal fun KonanSymbols.getUnboxFunction(valueType: ValueType): IrSimpleFuncti
  */
 internal fun initializeCachedBoxes(context: Context) {
     if (context.config.produce.isNativeBinary) {
-        val cachedTypes = listOf(ValueType.BOOLEAN, ValueType.BYTE, ValueType.CHAR,
-                ValueType.SHORT, ValueType.INT, ValueType.LONG)
-        cachedTypes.forEach { valueType ->
-            val cacheName = "${valueType.name}_CACHE"
-            val rangeStart = "${valueType.name}_RANGE_FROM"
-            val rangeEnd = "${valueType.name}_RANGE_TO"
-            valueType.initCache(context, cacheName, rangeStart, rangeEnd)
+        BoxCache.values().forEach { cache ->
+            val cacheName = "${cache.name}_CACHE"
+            val rangeStart = "${cache.name}_RANGE_FROM"
+            val rangeEnd = "${cache.name}_RANGE_TO"
+            initCache(cache, context, cacheName, rangeStart, rangeEnd)
         }
     }
 }
@@ -77,48 +161,57 @@ internal fun initializeCachedBoxes(context: Context) {
 /**
  * Adds global that refers to the cache.
  */
-private fun ValueType.initCache(context: Context, cacheName: String,
-                                rangeStartName: String, rangeEndName: String) {
-    val kotlinType = context.ir.symbols.boxClasses[this]!!.owner
-    val (start, end) = context.config.target.getBoxCacheRange(this)
+private fun initCache(cache: BoxCache, context: Context, cacheName: String,
+                      rangeStartName: String, rangeEndName: String) {
+
+    val kotlinType = context.irBuiltIns.getKotlinClass(cache)
+    val staticData = context.llvm.staticData
+    val llvmType = staticData.getLLVMType(kotlinType.defaultType)
+
+    val (start, end) = context.config.target.getBoxCacheRange(cache)
     // Constancy of these globals allows LLVM's constant propagation and DCE
     // to remove fast path of boxing function in case of empty range.
-    context.llvm.staticData.placeGlobal(rangeStartName, createConstant(start), true)
+    staticData.placeGlobal(rangeStartName, createConstant(llvmType, start), true)
             .setConstant(true)
-    context.llvm.staticData.placeGlobal(rangeEndName, createConstant(end), true)
+    staticData.placeGlobal(rangeEndName, createConstant(llvmType, end), true)
             .setConstant(true)
-    val staticData = context.llvm.staticData
-    val values = (start..end).map { staticData.createInitializer(kotlinType, createConstant(it)) }
-    val llvmBoxType = structType(context.llvm.runtime.objHeaderType, this.llvmType)
+    val values = (start..end).map { staticData.createInitializer(kotlinType, createConstant(llvmType, it)) }
+    val llvmBoxType = structType(context.llvm.runtime.objHeaderType, llvmType)
     staticData.placeGlobalConstArray(cacheName, llvmBoxType, values, true).llvm
 }
 
-private fun ValueType.createConstant(value: Int) =
-    constValue(when (this) {
-        ValueType.BOOLEAN   -> LLVMConstInt(LLVMInt1Type(),  (value > 0).toByte().toLong(), 1)!!
-        ValueType.BYTE      -> LLVMConstInt(LLVMInt8Type(),  value.toByte().toLong(),  1)!!
-        ValueType.CHAR      -> LLVMConstInt(LLVMInt16Type(), value.toChar().toLong(),  0)!!
-        ValueType.SHORT     -> LLVMConstInt(LLVMInt16Type(), value.toShort().toLong(), 1)!!
-        ValueType.INT       -> LLVMConstInt(LLVMInt32Type(), value.toLong(),   1)!!
-        ValueType.LONG      -> LLVMConstInt(LLVMInt64Type(), value.toLong(),             1)!!
-        else                -> error("Cannot box value of type $this")
-    })
+private fun createConstant(llvmType: LLVMTypeRef, value: Int): ConstValue =
+        constValue(LLVMConstInt(llvmType, value.toLong(), 1)!!)
 
 // When start is greater than end then `inRange` check is always false
 // and can be eliminated by LLVM.
 private val emptyRange = 1 to 0
 
 // Memory usage is around 20kb.
-private val defaultCacheRanges = mapOf(
-        ValueType.BOOLEAN to (0 to 1),
-        ValueType.BYTE  to (-128 to 127),
-        ValueType.SHORT to (-128 to 127),
-        ValueType.CHAR  to (0 to 255),
-        ValueType.INT   to (-128 to 127),
-        ValueType.LONG  to (-128 to 127)
-)
+private val BoxCache.defaultRange get() = when (this) {
+    BoxCache.BOOLEAN -> (0 to 1)
+    BoxCache.BYTE -> (-128 to 127)
+    BoxCache.SHORT -> (-128 to 127)
+    BoxCache.CHAR -> (0 to 255)
+    BoxCache.INT -> (-128 to 127)
+    BoxCache.LONG -> (-128 to 127)
+}
 
-fun KonanTarget.getBoxCacheRange(valueType: ValueType): Pair<Int, Int> = when (this) {
+private fun KonanTarget.getBoxCacheRange(cache: BoxCache): Pair<Int, Int> = when (this) {
     is KonanTarget.ZEPHYR   -> emptyRange
-    else                    -> defaultCacheRanges[valueType]!!
+    else                    -> cache.defaultRange
+}
+
+internal fun IrBuiltIns.getKotlinClass(cache: BoxCache): IrClass = when (cache) {
+    BoxCache.BOOLEAN -> booleanClass
+    BoxCache.BYTE -> byteClass
+    BoxCache.SHORT -> shortClass
+    BoxCache.CHAR -> charClass
+    BoxCache.INT -> intClass
+    BoxCache.LONG -> longClass
+}.owner
+
+// TODO: consider adding box caches for unsigned types.
+enum class BoxCache {
+    BOOLEAN, BYTE, SHORT, CHAR, INT, LONG
 }

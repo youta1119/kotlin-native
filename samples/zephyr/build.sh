@@ -8,9 +8,16 @@ if [ "$ZEPHYR_BASE" == "PLEASE_SET_ZEPHYR_BASE" ] ; then
     exit 1
 fi
 
+export KONAN_DATA_DIR=$HOME/.konan
+export KONAN_DEPS=$KONAN_DATA_DIR/dependencies
+
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd )
 
-source "$DIR/../konan.sh"
+if [ -z "$KONAN_HOME" ]; then
+    PATH="$DIR/../../dist/bin:$DIR/../../bin:$PATH"
+else
+    PATH="$KONAN_HOME/bin:$PATH"
+fi
 
 if [ x$TARGET == x ]; then
 case "$OSTYPE" in
@@ -20,13 +27,13 @@ case "$OSTYPE" in
 esac
 fi
 
-GCC_ARM="$KONAN_DEPS/$TOOLCHAIN"
+GNU_ARM="$KONAN_DEPS/$TOOLCHAIN"
 
 rm -rf $DIR/build || exit 1
 mkdir -p $DIR/build && cd $DIR/build
 
-export ZEPHYR_GCC_VARIANT=gccarmemb
-export GCCARMEMB_TOOLCHAIN_PATH=$GCC_ARM
+export ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb
+export GNUARMEMB_TOOLCHAIN_PATH=$GNU_ARM
 
 [ -f CMakeCache.txt ] || cmake -DCMAKE_VERBOSE_MAKEFILE=ON -DBOARD=$BOARD .. || exit 1
 

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import kotlinx.cinterop.*
 import sockets.*
 
@@ -7,7 +12,7 @@ fun main(args: Array<String>) {
         return
     }
 
-    val port = atoi(args[0]).toShort()
+    val port = atoi(args[0]).toUShort()
 
     memScoped {
 
@@ -16,40 +21,40 @@ fun main(args: Array<String>) {
         val serverAddr = alloc<sockaddr_in>()
 
         val listenFd = socket(AF_INET, SOCK_STREAM, 0)
-                .ensureUnixCallResult { it >= 0 }
+                .toInt().ensureUnixCallResult { it >= 0 }
 
         with(serverAddr) {
-            memset(this.ptr, 0, sockaddr_in.size)
-            sin_family = AF_INET.narrow()
-            sin_addr.s_addr = htons(0).toInt()
+            memset(this.ptr, 0, sockaddr_in.size.convert())
+            sin_family = AF_INET.convert()
+            sin_addr.s_addr = htons(0u).convert()
             sin_port = htons(port)
         }
 
-        bind(listenFd, serverAddr.ptr.reinterpret(), sockaddr_in.size.toInt())
-                .ensureUnixCallResult { it == 0 }
+        bind(listenFd, serverAddr.ptr.reinterpret(), sockaddr_in.size.toUInt())
+                .toInt().ensureUnixCallResult { it == 0 }
 
         listen(listenFd, 10)
-                .ensureUnixCallResult { it == 0 }
+                .toInt().ensureUnixCallResult { it == 0 }
 
         val commFd = accept(listenFd, null, null)
-                .ensureUnixCallResult { it >= 0 }
+                .toInt().ensureUnixCallResult { it >= 0 }
 
         while (true) {
-            val length = read(commFd, buffer, bufferLength)
-                    .ensureUnixCallResult { it >= 0 }
+            val length = read(commFd, buffer, bufferLength.convert())
+                    .toInt().ensureUnixCallResult { it >= 0 }
 
-            if (length == 0L) {
+            if (length == 0) {
                 break
             }
 
-            write(commFd, buffer, length)
-                    .ensureUnixCallResult { it >= 0 }
+            write(commFd, buffer, length.convert())
+                    .toInt().ensureUnixCallResult { it >= 0 }
         }
     }
 }
 
 // Not available through interop because declared as macro:
-fun htons(value: Short) = ((value.toInt() ushr 8) or (value.toInt() shl 8)).toShort()
+fun htons(value: UShort) = ((value.toInt() ushr 8) or (value.toInt() shl 8)).toUShort()
 
 fun throwUnixError(): Nothing {
     perror(null) // TODO: store error message to exception instead.
@@ -57,13 +62,6 @@ fun throwUnixError(): Nothing {
 }
 
 inline fun Int.ensureUnixCallResult(predicate: (Int) -> Boolean): Int {
-    if (!predicate(this)) {
-        throwUnixError()
-    }
-    return this
-}
-
-inline fun Long.ensureUnixCallResult(predicate: (Long) -> Boolean): Long {
     if (!predicate(this)) {
         throwUnixError()
     }

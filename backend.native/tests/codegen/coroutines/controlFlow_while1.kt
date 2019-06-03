@@ -1,29 +1,33 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package codegen.coroutines.controlFlow_while1
 
 import kotlin.test.*
 
-import kotlin.coroutines.experimental.*
-import kotlin.coroutines.experimental.intrinsics.*
+import kotlin.coroutines.*
+import kotlin.coroutines.intrinsics.*
 
 open class EmptyContinuation(override val context: CoroutineContext = EmptyCoroutineContext) : Continuation<Any?> {
     companion object : EmptyContinuation()
-    override fun resume(value: Any?) {}
-    override fun resumeWithException(exception: Throwable) { throw exception }
+    override fun resumeWith(result: Result<Any?>) { result.getOrThrow() }
 }
 
-suspend fun s1(): Int = suspendCoroutineOrReturn { x ->
+suspend fun s1(): Int = suspendCoroutineUninterceptedOrReturn { x ->
     println("s1")
     x.resume(42)
     COROUTINE_SUSPENDED
 }
 
-suspend fun s2(): Int = suspendCoroutineOrReturn { x ->
+suspend fun s2(): Int = suspendCoroutineUninterceptedOrReturn { x ->
     println("s2")
     x.resumeWithException(Error("Error"))
     COROUTINE_SUSPENDED
 }
 
-suspend fun s3(value: Int): Int = suspendCoroutineOrReturn { x ->
+suspend fun s3(value: Int): Int = suspendCoroutineUninterceptedOrReturn { x ->
     println("s3")
     x.resume(value)
     COROUTINE_SUSPENDED

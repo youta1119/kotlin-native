@@ -16,14 +16,13 @@
 
 package org.jetbrains.kotlin
 
-import groovy.json.JsonOutput
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecResult
-import org.jetbrains.kotlin.konan.target.*
-import org.jetbrains.kotlin.konan.properties.*
 
 import javax.inject.Inject
+import java.nio.file.Paths
+import java.util.function.Function
 import java.util.regex.Pattern
 
 abstract class KonanTest extends JavaExec {
@@ -32,7 +31,8 @@ abstract class KonanTest extends JavaExec {
     public String source
     def platformManager = project.rootProject.platformManager
     def target = platformManager.targetManager(project.testTarget).target
-    def dist = project.rootProject.file(project.findProperty("konan.home") ?: "dist")
+    def dist = project.rootProject.file(project.findProperty("org.jetbrains.kotlin.native.home") ?:
+            project.findProperty("konan.home") ?: "dist")
     def dependenciesDir = project.rootProject.dependenciesDir
     def konancDriver = project.isWindows() ? "konanc.bat" : "konanc"
     def konanc = new File("${dist.canonicalPath}/bin/$konancDriver").absolutePath
@@ -40,14 +40,21 @@ abstract class KonanTest extends JavaExec {
     def enableKonanAssertions = true
     String outputDirectory = null
     String goldValue = null
+    // Checks test's output against gold value and returns true if the output matches the expectation
+    Function<String, Boolean> outputChecker = { str -> (goldValue == null || goldValue == str) }
+    boolean printOutput = true
     String testData = null
     int expectedExitStatus = 0
     List<String> arguments = null
     List<String> flags = null
 
+    boolean multiRuns = false
+    List<List<String>> multiArguments = null
+
     boolean enabled = true
     boolean expectedFail = false
     boolean run = true
+    boolean compilerMessages = false
 
     void setDisabled(boolean value) {
         this.enabled = !value
@@ -63,10 +70,9 @@ abstract class KonanTest extends JavaExec {
         if (outputDirectory != null) {
             return
         }
-
-        def outputSourceSet = project.sourceSets.findByName(getOutputSourceSetName())
+        def outputSourceSet = project.findProperty(getOutputSourceSetName())
         if (outputSourceSet != null) {
-            outputDirectory = outputSourceSet.output.getDirs().getSingleFile().absolutePath + "/$name"
+            outputDirectory = outputSourceSet.absolutePath + "/$name"
             project.file(outputDirectory).mkdirs()
         } else {
             outputDirectory = getTemporaryDir().absolutePath
@@ -101,13 +107,17 @@ abstract class KonanTest extends JavaExec {
             classpath = project.fileTree("$dist.canonicalPath/konan/lib/") {
                 include '*.jar'
             }
-            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx2G",
+            jvmArgs "-Dkonan.home=${dist.canonicalPath}", "-Xmx4G",
                     "-Djava.library.path=${dist.canonicalPath}/konan/nativelib"
             enableAssertions = true
             def sources = File.createTempFile(name,".lst")
             sources.deleteOnExit()
             def sourcesWriter = sources.newWriter()
-            filesToCompile.each {sourcesWriter << "$it\n"}
+            filesToCompile.each { f ->
+                sourcesWriter.write(f.chars().any { Character.isWhitespace(it) }
+                        ? "\"${f.replace("\\", "\\\\")}\"\n" // escape file name
+                        : "$f\n")
+            }
             sourcesWriter.close()
             args = ["-output", output,
                     "@${sources.absolutePath}",
@@ -118,6 +128,10 @@ abstract class KonanTest extends JavaExec {
             }
             if (enableKonanAssertions) {
                 args "-ea"
+            }
+            if (project.hasProperty("test_verbose")) {
+                println("Files to compile: $filesToCompile")
+                println(args)
             }
             standardOutput = log
             errorOutput = log
@@ -150,35 +164,102 @@ abstract class KonanTest extends JavaExec {
         return sourceFiles
     }
 
-    void createCoroutineUtil(String file) {
-        StringBuilder text = new StringBuilder("import kotlin.coroutines.experimental.*\n")
-        text.append(
-                """
-open class EmptyContinuation(override val context: CoroutineContext = EmptyCoroutineContext) : Continuation<Any?> {
-    companion object : EmptyContinuation()
-    override fun resume(value: Any?) {}
-    override fun resumeWithException(exception: Throwable) { throw exception }
-}
+    String createTextForHelpers() {
+        def coroutinesPackage = "kotlin.coroutines"
 
-fun <T> handleResultContinuation(x: (T) -> Unit): Continuation<T> = object: Continuation<T> {
-    override val context = EmptyCoroutineContext
-    override fun resumeWithException(exception: Throwable) {
-        throw exception
-    }
+        def emptyContinuationBody =
+            """
+                |override fun resumeWith(result: Result<Any?>) { result.getOrThrow() }
+            """.stripMargin()
 
-    override fun resume(data: T) = x(data)
-}
+        def handleResultContinuationBody = """
+                |override fun resumeWith(result: Result<T>) { x(result.getOrThrow()) }
+            """.stripMargin()
 
-fun handleExceptionContinuation(x: (Throwable) -> Unit): Continuation<Any?> = object: Continuation<Any?> {
-    override val context = EmptyCoroutineContext
-    override fun resumeWithException(exception: Throwable) {
-        x(exception)
-    }
+        def handleExceptionContinuationBody = """
+                |override fun resumeWith(result: Result<Any?>) {
+                |    val exception = result.exceptionOrNull() ?: return
+                |    x(exception)
+                |}
+            """.stripMargin()
 
-    override fun resume(data: Any?) { }
-}
-"""     )
-        createFile(file, text.toString())
+        return """
+            |package helpers
+            |import $coroutinesPackage.*
+            |
+            |fun <T> handleResultContinuation(x: (T) -> Unit): Continuation<T> = object: Continuation<T> {
+            |    override val context = EmptyCoroutineContext
+            |    $handleResultContinuationBody
+            |}
+            |
+            |
+            |fun handleExceptionContinuation(x: (Throwable) -> Unit): Continuation<Any?> = object: Continuation<Any?> {
+            |    override val context = EmptyCoroutineContext
+            |    $handleExceptionContinuationBody
+            |}
+            |
+            |open class EmptyContinuation(override val context: CoroutineContext = EmptyCoroutineContext) : Continuation<Any?> {
+            |    companion object : EmptyContinuation()
+            |    $emptyContinuationBody
+            |}
+            |
+            |abstract class ContinuationAdapter<in T> : Continuation<T> {
+            |    override val context: CoroutineContext = EmptyCoroutineContext
+            |    override fun resumeWith(result: Result<T>) {
+            |       if (result.isSuccess) {
+            |           resume(result.getOrThrow())
+            |       } else {
+            |           resumeWithException(result.exceptionOrNull()!!)
+            |       }
+            |    }
+            |
+            |    abstract fun resumeWithException(exception: Throwable)
+            |    abstract fun resume(value: T)
+            |}
+            |class StateMachineCheckerClass {
+            |    private var counter = 0
+            |    var finished = false
+            |
+            |    var proceed: () -> Unit = {}
+            |    fun reset() {
+            |        counter = 0
+            |        finished = false
+            |        proceed = {}
+            |     }
+            |
+            |    suspend fun suspendHere() = suspendCoroutine<Unit> { c ->
+            |        counter++
+            |        proceed = { c.resume(Unit) }
+            |    }
+            |
+            |    fun check(numberOfSuspensions: Int) {
+            |        for (i in 1..numberOfSuspensions) {
+            |            if (counter != i) error("Wrong state-machine generated: suspendHere called should be called exactly once in one state. Expected " + i + ", got " + counter)
+            |            proceed()
+            |        }
+            |        if (counter != numberOfSuspensions)
+            |            error("Wrong state-machine generated: suspendHere called should be called exactly once in one state. Expected " + numberOfSuspensions + ", got " + counter)
+            |        if (finished) error("Wrong state-machine generated: it is finished early")
+            |        proceed()
+            |        if (!finished) error("Wrong state-machine generated: it is not finished yet")
+            |    }
+            |}            
+            |val StateMachineChecker = StateMachineCheckerClass()
+            |object CheckStateMachineContinuation: ContinuationAdapter<Unit>() {
+            |    override val context: CoroutineContext
+            |        get() = EmptyCoroutineContext
+            |
+            |    override fun resume(value: Unit) {
+            |        StateMachineChecker.proceed = {
+            |            StateMachineChecker.finished = true
+            |        }
+            |    }
+            |
+            |    override fun resumeWithException(exception: Throwable) {
+            |        throw exception
+            |    }
+            |}
+        """.stripMargin()
     }
 
     // TODO refactor
@@ -190,9 +271,9 @@ fun handleExceptionContinuation(x: (Throwable) -> Unit): Continuation<Any?> = ob
         def matcher = filePattern.matcher(srcText)
 
         if (srcText.contains('// WITH_COROUTINES')) {
-            def coroutineUtilFileName = "$outputDirectory/CoroutineUtil.kt"
-            createCoroutineUtil(coroutineUtilFileName)
-            result.add(coroutineUtilFileName)
+            def coroutineHelpersFileName = "$outputDirectory/helpers.kt"
+            createFile(coroutineHelpersFileName, createTextForHelpers())
+            result.add(coroutineHelpersFileName)
         }
 
         if (!matcher.find()) {
@@ -217,8 +298,15 @@ fun handleExceptionContinuation(x: (Throwable) -> Unit): Continuation<Any?> = ob
     }
 
     void createFile(String file, String text) {
-        project.file(file).write(text)
+        Paths.get(file).with {
+            getParent().toFile().with {
+                if (!exists()) { mkdirs() }
+            }
+            write(text)
+        }
     }
+
+    OutputStream out
 
     @TaskAction
     void executeTest() {
@@ -240,39 +328,56 @@ fun handleExceptionContinuation(x: (Throwable) -> Unit): Continuation<Any?> = ob
         }
         println "execution: $exe"
 
-        def out = new ByteArrayOutputStream()
+        def compilerMessagesText = compilerMessages ? project.file("${program}.compilation.log").getText('UTF-8') : ""
+
+        out = new ByteArrayOutputStream()
         //TODO Add test timeout
-        ExecResult execResult = project.execute {
 
-            commandLine exe
+        def times = multiRuns ? multiArguments.size() : 1
 
-            if (arguments != null) {
-                args arguments
+        def exitCodeMismatch = false
+        for (int i = 0; i < times; i++) {
+            ExecResult execResult = project.execute {
+
+                commandLine exe
+
+                if (arguments != null) {
+                    args arguments
+                }
+                if (multiRuns && multiArguments[i] != null) {
+                    args multiArguments[i]
+                }
+                if (testData != null) {
+                    standardInput = new ByteArrayInputStream(testData.bytes)
+                }
+                standardOutput = out
+
+                ignoreExitValue = true
             }
-            if (testData != null) {
-                standardInput = new ByteArrayInputStream(testData.bytes)
-            }
-            standardOutput = out
 
-            ignoreExitValue = true
+            exitCodeMismatch |= execResult.exitValue != expectedExitStatus
+            if (exitCodeMismatch) {
+                def message = "Expected exit status: $expectedExitStatus, actual: ${execResult.exitValue}"
+                if (this.expectedFail) {
+                    println("Expected failure. $message")
+                } else {
+                    throw new TestFailedException("Test failed on iteration $i. $message\n ${out.toString("UTF-8")}")
+                }
+            }
         }
-        def result = out.toString("UTF-8")
-
-        println(result)
-
-        def exitCodeMismatch = execResult.exitValue != expectedExitStatus
-        if (exitCodeMismatch) {
-            def message = "Expected exit status: $expectedExitStatus, actual: ${execResult.exitValue}"
-            if (this.expectedFail) {
-                println("Expected failure. $message")
-            } else {
-                throw new TestFailedException("Test failed. $message")
-            }
+        def result = compilerMessagesText + out.toString("UTF-8")
+        if (printOutput) {
+            println(result)
         }
-
-        def goldValueMismatch = goldValue != null && goldValue != result.replace(System.lineSeparator(), "\n")
+        result = result.replace(System.lineSeparator(), "\n")
+        def goldValueMismatch = !outputChecker.apply(result)
         if (goldValueMismatch) {
-            def message = "Expected output: $goldValue, actual output: $result"
+            def message
+            if (goldValue != null) {
+                message = "Expected output: $goldValue, actual output: $result"
+            } else {
+                message = "Actual output doesn't match output checker: $result"
+            }
             if (this.expectedFail) {
                 println("Expected failure. $message")
             } else {
@@ -281,12 +386,6 @@ fun handleExceptionContinuation(x: (Throwable) -> Unit): Continuation<Any?> = ob
         }
 
         if (!exitCodeMismatch && !goldValueMismatch && this.expectedFail) println("Unexpected pass")
-    }
-}
-
-class TestFailedException extends RuntimeException {
-    TestFailedException(String s) {
-        super(s)
     }
 }
 
@@ -309,9 +408,9 @@ abstract class ExtKonanTest extends KonanTest {
             return
         }
 
-        def outputSourceSet = project.sourceSets.findByName(getOutputSourceSetName())
+        def outputSourceSet = project.findProperty(getOutputSourceSetName())
         if (outputSourceSet != null) {
-            outputDirectory = outputSourceSet.output.getDirs().getSingleFile().absolutePath
+            outputDirectory = outputSourceSet.absolutePath
             project.file(outputDirectory).mkdirs()
         } else {
             outputDirectory = getTemporaryDir().absolutePath
@@ -378,6 +477,9 @@ class BuildKonanTest extends ExtKonanTest {
  * Runs test built with Konan's TestRunner
  */
 class RunKonanTest extends ExtKonanTest {
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = true
 
     public def buildTaskName = 'buildKonanTests'
@@ -427,10 +529,46 @@ class RunKonanTest extends ExtKonanTest {
 }
 
 class RunStdlibTest extends RunKonanTest {
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = false
+    public def statistics = new Statistics()
 
     RunStdlibTest() {
         super('buildKonanStdlibTests')
+    }
+
+    @Override
+    void executeTest() {
+        try {
+            super.executeTest()
+        } finally {
+            def output = out.toString("UTF-8")
+
+            // NOTE: these regexs assert that GTEST output format is used
+            def matcher = (output =~ ~/\[==========\] Running ([0-9]*) tests from ([0-9]*) test cases \. .*/)
+            def testsTotal = 0
+            if (matcher) {
+                testsTotal = matcher[0][1] as Integer
+            }
+
+            matcher = (output =~ ~/\[  PASSED  \] ([0-9]*) tests\./)
+            if (matcher) {
+                def n = matcher[0][1] as Integer
+                statistics.pass(n)
+            }
+            matcher = (output =~ ~/\[  FAILED  \] ([0-9]*) tests.*/)
+            if (matcher) {
+                def n = matcher[0][1] as Integer
+                statistics.fail(n)
+            }
+            use(KonanTestSuiteReportKt) {
+                if (statistics.total == 0) {
+                    statistics.error(testsTotal != 0 ? testsTotal : 1)
+                }
+            }
+        }
     }
 }
 
@@ -438,6 +576,9 @@ class RunStdlibTest extends RunKonanTest {
  * Compiles and executes test as a standalone binary
  */
 class RunStandaloneKonanTest extends KonanTest {
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = true
 
     void compileTest(List<String> filesToCompile, String exe) {
@@ -450,6 +591,9 @@ class RunStandaloneKonanTest extends KonanTest {
 // project.exec + a shell script isolate the jvm
 // from IDEA. Use the RunKonanTest instead.
 class RunDriverKonanTest extends KonanTest {
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = true
 
     RunDriverKonanTest() {
@@ -488,6 +632,9 @@ class RunDriverKonanTest extends KonanTest {
 }
 
 class RunInteropKonanTest extends KonanTest {
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = true
 
     private String interop
@@ -508,16 +655,18 @@ class RunInteropKonanTest extends KonanTest {
 
         List<String> linkerArguments = interopConf.linkerOpts // TODO: add arguments from .def file
 
-        List<String> compilerArguments = ["-library", interopBc, "-nativelibrary", interopStubsBc] +
-                linkerArguments.collectMany { ["-linkerOpts", it] }
+        List<String> compilerArguments = ["-library", interopBc, "-native-library", interopStubsBc] +
+                linkerArguments.collectMany { ["-linker-options", it] }
 
         runCompiler(filesToCompile, exe, compilerArguments)
     }
 }
 
 class LinkKonanTest extends KonanTest {
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = true
-
     protected String lib
 
     void compileTest(List<String> filesToCompile, String exe) {
@@ -530,9 +679,12 @@ class LinkKonanTest extends KonanTest {
 }
 
 class DynamicKonanTest extends KonanTest {
-    protected String cSource
-
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
     public def inDevelopersRun = true
+
+    protected String cSource
 
     void compileTest(List<String> filesToCompile, String exe) {
         def libname = "testlib"
@@ -563,72 +715,66 @@ class DynamicKonanTest extends KonanTest {
     }
 }
 class RunExternalTestGroup extends RunStandaloneKonanTest {
-    def inDevelopersRun = false
+    /**
+     * overrides [KonanTest::inDevelopersRun] used in [:backend.native:tests:sanity]
+     */
+    public def inDevelopersRun = false
 
     def groupDirectory = "."
     def outputSourceSetName = "testOutputExternal"
     String filter = project.findProperty("filter")
-    Map<String, TestResult> results = [:]
-    Statistics statistics = new Statistics()
+    def testGroupReporter = new KonanTestGroupReportEnvironment(project)
 
     RunExternalTestGroup() {
-    }
-
-    static enum TestStatus {
-        PASSED,
-        FAILED,
-        ERROR,
-        SKIPPED
-    }
-    static class TestResult {
-        TestStatus status = null
-        String comment = null
-
-        TestResult(TestStatus status, String comment = ""){
-            this.status = status;
-            this.comment = comment;
-        }
-    }
-    static class Statistics {
-        int total = 0
-        int passed = 0
-        int failed = 0
-        int error = 0
-        int skipped = 0
-
-        void pass(int count = 1) {
-            passed += count
-            total += count
-        }
-
-        void skip(int count = 1) {
-            skipped += count
-            total += count
-        }
-
-        void fail(int count = 1) {
-            failed += count
-            total += count
-        }
-
-        void error(int count = 1) {
-            error += count
-            total += count
-        }
-
-        void add(Statistics other) {
-            total   += other.total
-            passed  += other.passed
-            failed  += other.failed
-            error   += other.error
-            skipped += other.skipped
-        }
     }
 
     @Override
     List<String> buildCompileList() {
         // Already build by the previous step
         return null
+    }
+
+    void parseLanguageFlags() {
+        def text = project.file(source).text
+        def languageSettings = findLinesWithPrefixesRemoved(text, "// !LANGUAGE: ")
+        if (languageSettings.size() != 0) {
+            languageSettings.forEach { line ->
+                line.split(" ").toList().forEach { flags.add("-XXLanguage:$it") }
+            }
+        }
+
+        def experimentalSettings = findLinesWithPrefixesRemoved(text, "// !USE_EXPERIMENTAL: ")
+        if (experimentalSettings.size() != 0) {
+            experimentalSettings.forEach { line ->
+                line.split(" ").toList().forEach { flags.add("-Xuse-experimental=$it") }
+            }
+        }
+    }
+
+    static String markMutableObjects(String text) {
+        def lines = text.readLines()
+        def result = new ArrayList<String>(lines.size())
+        lines.forEach { line ->
+            // FIXME: find only those who has vars inside
+            // Find object declarations and companion objects
+            if (line.matches("\\s*(private|public|internal)?\\s*object [a-zA-Z_][a-zA-Z0-9_]*\\s*.*")
+                    || line.matches("\\s*(private|public|internal)?\\s*companion object.*")) {
+                result += "@kotlin.native.ThreadLocal"
+            }
+            result += line
+        }
+        return result.join(System.lineSeparator())
+    }
+
+    String insertInTextAfter(String text, String insert, String after) {
+        def begin = text.indexOf(after)
+        if (begin != -1) {
+            def end = text.indexOf("\n", begin)
+            text = text.substring(0, end) + insert + text.substring(end)
+        } else {
+            text = insert + text
+        }
+        return text
     }
 
     List<String> createTestFiles() {
@@ -641,12 +787,15 @@ class RunExternalTestGroup extends RunStandaloneKonanTest {
         def classPattern = ~/.*(class|object|enum)\s+(${identifier}*).*/
 
         def sourceName = "_" + normalize(project.file(source).name)
-        def packages = new LinkedHashSet()
+        def packages = new LinkedHashSet<String>()
         def imports = []
 
         def result = super.buildCompileList()
         for (String filePath : result) {
             def text = project.file(filePath).text
+            if (text.contains('COROUTINES_PACKAGE')) {
+                text = text.replace('COROUTINES_PACKAGE', 'kotlin.coroutines')
+            }
             def pkg = null
             if (text =~ packagePattern) {
                 pkg = (text =~ packagePattern)[0][1]
@@ -655,11 +804,17 @@ class RunExternalTestGroup extends RunStandaloneKonanTest {
                 text = text.replaceFirst(packagePattern, "package $pkg")
             } else {
                 pkg = sourceName
-                text = "package $pkg\n" + text
+                text = insertInTextAfter(text, "\npackage $pkg\n", "@file:Suppress")
             }
             if (text =~ boxPattern) {
                 imports.add("${pkg}.*")
             }
+
+            // Find mutable objects that should be marked as ThreadLocal
+            if (filePath != "$outputDirectory/helpers.kt") {
+                text = markMutableObjects(text)
+            }
+
             createFile(filePath, text)
         }
         // TODO: optimize files writes
@@ -698,14 +853,19 @@ class RunExternalTestGroup extends RunStandaloneKonanTest {
                     pkg = 'package ' + (text =~ packagePattern)[0][1]
                     text = text.replaceFirst(packagePattern, '')
                 }
-                text = (pkg ? "$pkg\n" : "") + "import $sourceName.*\n" + text
+                text = insertInTextAfter(text, (pkg ? "\n$pkg\n" : "") + "import $sourceName.*\n", "@file:Suppress")
             }
             // now replace all package usages in full qualified names
-            def res = ""
-            text.eachLine {
-                def line = it
-                packages.each { String pkg ->
-                    if (line.contains("$pkg.") && ! (line =~ packagePattern || line =~ importRegex)) {
+            def res = ""                      // result
+            def vars = new HashSet<String>()  // variables that has the same name as a package
+            text.eachLine { line ->
+                packages.each { pkg ->
+                    // line contains val or var declaration or function parameter declaration
+                    if ((line =~ ~/va(l|r) *$pkg *\=/) || (line =~ ~/fun .*\(\n?\s*$pkg:.*/)) {
+                        vars.add(pkg)
+                    }
+                    if (line.contains("$pkg.") && ! (line =~ packagePattern || line =~ importRegex)
+                            && ! vars.contains(pkg)) {
                         def idx = line.indexOf("$pkg")
                         if (! (idx > 0 && Character.isJavaIdentifierPart(line.charAt(idx - 1))) ) {
                             line = line.substring(0, idx) + "$sourceName.$pkg" + line.substring(idx + pkg.length())
@@ -763,8 +923,37 @@ fun runTest() {
         return result
     }
 
+    static def excludeList = [
+            "build/external/compiler/codegen/box/functions/functionExpression/functionExpressionWithThisReference.kt", // KT-26973
+            "build/external/compiler/codegen/box/inlineClasses/kt27096_innerClass.kt", // KT-27665
+            "build/external/compiler/codegen/boxInline/anonymousObject/kt8133.kt",
+            "build/external/compiler/codegen/box/localClasses/anonymousObjectInExtension.kt" // KT-29282
+    ]
+
     boolean isEnabledForNativeBackend(String fileName) {
         def text = project.file(fileName).text
+
+        if (excludeList.contains(fileName.replace(File.separator, "/"))) return false
+
+        if (findLinesWithPrefixesRemoved(text, "// WITH_REFLECT").size() != 0) return false
+
+        def languageSettings = findLinesWithPrefixesRemoved(text, '// !LANGUAGE: ')
+        if (!languageSettings.empty) {
+            def settings = languageSettings.first()
+            if (settings.contains('-ProperIeee754Comparisons') ||  // K/N supports only proper IEEE754 comparisons
+                    settings.contains('+NewInference') ||          // New inference is not implemented
+                    settings.contains('-ReleaseCoroutines') ||     // only release coroutines
+                    settings.contains('-DataClassInheritance')) {  // old behavior is not supported
+                return false
+            }
+        }
+
+        def version = findLinesWithPrefixesRemoved(text, '// LANGUAGE_VERSION: ')
+        if (version.size() != 0 && !version.contains("1.3")) {
+            // Support tests for 1.3 and exclude 1.2
+            return false
+        }
+
         def targetBackend = findLinesWithPrefixesRemoved(text, "// TARGET_BACKEND")
         if (targetBackend.size() != 0) {
             // There is some target backend. Check if it is NATIVE or not.
@@ -778,8 +967,12 @@ fun runTest() {
             for (String s : ignoredBackends) {
                 if (s.contains("NATIVE")) { return false }
             }
+            // No ignored backends. Check if test is targeted to FULL_JDK or has JVM_TARGET set
+            if (!findLinesWithPrefixesRemoved(text, "// FULL_JDK").isEmpty()) { return false }
+            if (!findLinesWithPrefixesRemoved(text, "// JVM_TARGET:").isEmpty()) { return false }
             return true
         }
+
     }
 
     @Override
@@ -790,9 +983,9 @@ fun runTest() {
     @Override
     String buildExePath() {
         def outputDir
-        def outputSourceSet = project.sourceSets.findByName(getOutputSourceSetName())
+        def outputSourceSet = project.findProperty(getOutputSourceSetName())
         if (outputSourceSet != null) {
-            outputDir = outputSourceSet.output.getDirs().getSingleFile().absolutePath + "/$name"
+            outputDir  = outputSourceSet.absolutePath+ "/$name"
         } else {
             outputDir = getTemporaryDir().absolutePath
         }
@@ -817,201 +1010,53 @@ fun runTest() {
             }
         }
 
-        statistics = new Statistics()
-        def testSuite = createTestSuite(name, statistics)
-        testSuite.start()
-        // Build tests in the group
-        flags = (flags ?: []) + "-tr"
-        def compileList = []
-        ktFiles.each {
-            source = project.relativePath(it)
-            if (isEnabledForNativeBackend(source)) {
-                // Create separate output directory for each test in the group.
-                outputDirectory = outputRootDirectory + "/${it.name}"
-                project.file(outputDirectory).mkdirs()
-                compileList.addAll(createTestFiles())
-            }
-        }
-        compileList.add(project.file("testUtils.kt").absolutePath)
-        compileList.add(project.file("helpers.kt").absolutePath)
-        try {
-            runCompiler(compileList, buildExePath(), flags)
-        } catch (Exception ex) {
-            println("ERROR: Compilation failed for test suite: ${testSuite.name} with exception: ${ex}")
+        testGroupReporter.suite(name) { suite ->
+            // Build tests in the group
+            flags = (flags ?: []) + "-tr"
+            def compileList = []
             ktFiles.each {
-                def testCase = testSuite.createTestCase(it.name)
-                testCase.error(ex)
-            }
-            throw new RuntimeException("Compilation failed", ex)
-        }
-
-        // Run the tests.
-        def currentResult = null
-        outputDirectory = outputRootDirectory
-        arguments = (arguments ?: []) + "--ktest_logger=SILENT"
-        ktFiles.each {
-            source = project.relativePath(it)
-            def savedArgs = arguments
-            arguments += "--ktest_filter=_${normalize(it.name)}.*"
-            println("TEST: $it.name (done: $statistics.total/${ktFiles.size()}, passed: $statistics.passed, skipped: $statistics.skipped)")
-            def testCase = testSuite.createTestCase(it.name)
-            testCase.start()
-            if (isEnabledForNativeBackend(source)) {
-                try {
-                    super.executeTest()
-                    currentResult = testCase.pass()
-                } catch (TestFailedException e) {
-                    currentResult = testCase.fail(e)
-                } catch (Exception ex) {
-                    currentResult = testCase.error(ex)
+                source = project.relativePath(it)
+                if (isEnabledForNativeBackend(source)) {
+                    // Create separate output directory for each test in the group.
+                    outputDirectory = outputRootDirectory + "/${it.name}"
+                    project.file(outputDirectory).mkdirs()
+                    parseLanguageFlags()
+                    compileList.addAll(createTestFiles())
                 }
-            } else {
-                currentResult = testCase.skip()
             }
-            arguments = savedArgs
-            println("TEST $currentResult.status\n")
-            if (currentResult.status == TestStatus.ERROR || currentResult.status == TestStatus.FAILED) {
-                println("Command to reproduce: ./gradlew $name -Pfilter=${it.name}\n")
-            }
-            results.put(it.name, currentResult)
-        }
-        testSuite.finish()
-
-        // Save the report.
-        def reportFile = project.file("${outputRootDirectory}/results.json")
-        def json = JsonOutput.toJson(["statistics" : statistics, "tests" : results])
-        reportFile.write(JsonOutput.prettyPrint(json))
-        println("TOTAL PASSED: $statistics.passed/$statistics.total (SKIPPED: $statistics.skipped)")
-    }
-
-    KonanTestSuite createTestSuite(String name, Statistics statistics) {
-        if (System.getenv("TEAMCITY_BUILD_PROPERTIES_FILE") != null)
-            return new TeamcityKonanTestSuite(name, statistics)
-        return new KonanTestSuite(name, statistics)
-    }
-
-    class KonanTestSuite {
-        protected name;
-        protected statistics;
-
-        KonanTestSuite(String name, Statistics statistics) {
-            this.name       = name
-            this.statistics = statistics
-        }
-
-        protected class KonanTestCase {
-            protected name
-
-            KonanTestCase(String name) {
-                this.name = name
+            compileList.add(project.file("testUtils.kt").absolutePath)
+            compileList.add(project.file("helpers.kt").absolutePath)
+            try {
+                runCompiler(compileList, buildExePath(), flags)
+            } catch (Exception ex) {
+                project.logger.quiet("ERROR: Compilation failed for test suite: $name with exception", ex)
+                project.logger.quiet("The following files were unable to compile:")
+                ktFiles.each { project.logger.quiet(it.name) }
+                suite.abort(ex, ktFiles.size())
+                throw new RuntimeException("Compilation failed", ex)
             }
 
-            void start(){}
-
-            TestResult pass() {
-                statistics.pass()
-                return new TestResult(TestStatus.PASSED)
+            // Run the tests.
+            def currentResult = null
+            outputDirectory = outputRootDirectory
+            arguments = (arguments ?: []) + "--ktest_logger=SILENT"
+            ktFiles.each { file ->
+                source = project.relativePath(file)
+                def savedArgs = arguments
+                arguments += "--ktest_filter=_${normalize(file.name)}.*"
+                use(KonanTestSuiteReportKt) {
+                    project.logger.quiet("TEST: $file.name (done: $testGroupReporter.statistics.total/${ktFiles.size()}, passed: $testGroupReporter.statistics.passed, skipped: $testGroupReporter.statistics.skipped)")
+                }
+                if (isEnabledForNativeBackend(source)) {
+                    suite.executeTest(file.name) {
+                       project.logger.quiet(source)
+                       super.executeTest()
+                    }
+                } else {
+                    suite.skipTest(file.name)
+                }
+                arguments = savedArgs
             }
-
-            TestResult fail(TestFailedException e) {
-                statistics.fail()
-                println(e.getMessage())
-                return new TestResult(TestStatus.FAILED, "Exception: ${e.getMessage()}. Cause: ${e.getCause()?.getMessage()}")
-            }
-
-            TestResult error(Exception e) {
-                statistics.error()
-                return new TestResult(TestStatus.ERROR, "Exception: ${e.getMessage()}. Cause: ${e.getCause()?.getMessage()}")
-            }
-
-            TestResult skip() {
-                statistics.skip()
-                return new TestResult(TestStatus.SKIPPED)
-            }
-        }
-
-        KonanTestCase createTestCase(String name) {
-            return new KonanTestCase(name)
-        }
-
-        void start() {}
-        void finish() {}
-    }
-
-    class TeamcityKonanTestSuite extends KonanTestSuite {
-        TeamcityKonanTestSuite(String suiteName, Statistics statistics) {
-            super(suiteName, statistics)
-        }
-
-        class TeamcityKonanTestCase extends KonanTestSuite.KonanTestCase {
-
-            TeamcityKonanTestCase(String name) {
-                super(name)
-            }
-
-            private teamcityFinish() {
-                teamcityReport("testFinished name='$name'")
-            }
-
-            void start() {
-                teamcityReport("testStarted name='$name'")
-            }
-
-            TestResult pass() {
-                teamcityFinish()
-                return super.pass()
-            }
-
-            TestResult fail(TestFailedException e) {
-                teamcityReport("testFailed type='comparisonFailure' name='$name' message='${toTeamCityFormat(e.getMessage())}'")
-                teamcityFinish()
-                return super.fail(e)
-            }
-
-            TestResult error(Exception e) {
-                def writer = new StringWriter()
-                e.printStackTrace(new PrintWriter(writer))
-                def rawString  = writer.toString()
-
-                teamcityReport("testFailed name='$name' message='${toTeamCityFormat(e.getMessage())}' details='${toTeamCityFormat(rawString)}'")
-                teamcityFinish()
-                return super.error(e)
-            }
-
-            TestResult skip() {
-                teamcityReport("testIgnored name='$name'")
-                teamcityFinish()
-                return super.skip()
-            }
-        }
-
-        TeamcityKonanTestCase createTestCase(String name) {
-            return new TeamcityKonanTestCase(name)
-        }
-
-        private teamcityReport(String msg) {
-            println("##teamcity[$msg]")
-        }
-
-        /**
-         * Teamcity require escaping some symbols in pipe manner.
-         * https://github.com/GitTools/GitVersion/issues/94
-         */
-        String toTeamCityFormat(String inStr) {
-            return inStr.replaceAll("\\|", "||")
-                        .replaceAll("\r",  "|r")
-                        .replaceAll("\n",  "|n")
-                        .replaceAll("'",   "|'")
-                        .replaceAll("\\[", "|[")
-                        .replaceAll("]",   "|]")
-        }
-
-        void start() {
-            teamcityReport("testSuiteStarted name='$name'")
-        }
-
-        void finish() {
-            teamcityReport("testSuiteFinished name='$name'")
         }
     }
 }

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import org.jetbrains.kotlin.compiletest.lldbTest
 import org.junit.Test
 
@@ -35,7 +40,6 @@ class LldbTests {
         [..] at main.kt:5
     """)
 
-    //FIXME: Boolean and Int are wrong
     @Test
     fun `can inspect values of primitive types`() = lldbTest("""
         fun main(args: Array<String>) {
@@ -54,7 +58,7 @@ class LldbTests {
             (int) b = 2
             (long) c = -3
             (unsigned char) d = 'c'
-            (void) e = <Unable to determine byte size.>
+            (bool) e = true
     """)
 
     @Test
@@ -73,8 +77,9 @@ class LldbTests {
         > b main.kt:4
         > r
         > fr var
-        (ObjHeader *) point = Point(x=1, y=2)
-        (ObjHeader *) person = John Doe
+        (ObjHeader *) args = []
+        (ObjHeader *) point = {'y': 2, 'x': 1}
+        (ObjHeader *) person = {}
     """)
 
     @Test
@@ -94,8 +99,9 @@ class LldbTests {
         > b main.kt:8
         > r
         > fr var
+        (ObjHeader *) args = []
         (ObjHeader *) xs = [1, 2, 3]
-        (ObjHeader *) ys = [Point(x=1, y=2), null]
+        (ObjHeader *) ys = [{'y': 2, 'x': 1}, 'null']
     """)
 
     @Test
@@ -107,10 +113,9 @@ class LldbTests {
 
         data class Point(val x: Int, val y: Int)
     """, """
-        > type summary add "ObjHeader *" --inline-children
         > b main.kt:3
         > r
         > fr var xs
-        (ObjHeader *) xs = [..] (0 = 3, 1 = 5, 2 = 8)
+        (ObjHeader *) xs = [3, 5, 8]
     """)
 }

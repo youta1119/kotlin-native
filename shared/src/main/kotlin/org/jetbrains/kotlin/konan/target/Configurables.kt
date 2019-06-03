@@ -18,26 +18,49 @@ package org.jetbrains.kotlin.konan.target
 
 import org.jetbrains.kotlin.konan.properties.*
 
+interface ClangFlags : TargetableExternalStorage {
+    val clangFlags get()        = targetList("clangFlags")
+    val clangNooptFlags get()   = targetList("clangNooptFlags")
+    val clangOptFlags get()     = targetList("clangOptFlags")
+    val clangDebugFlags get()   = targetList("clangDebugFlags")
+    val clangDynamicFlags get() = targetList("clangDynamicFlags")
+}
+
+interface LlcFlags : TargetableExternalStorage {
+    val llcFlags get()      = targetList("llcFlags")
+    val llcNooptFlags get() = targetList("llcNooptFlags")
+    val llcOptFlags get()   = targetList("llcOptFlags")
+    val llcDebugFlags get() = targetList("llcDebugFlags")
+}
+
+interface OptFlags : TargetableExternalStorage {
+    val optFlags get()      = targetList("optFlags")
+    val optNooptFlags get() = targetList("optNooptFlags")
+    val optOptFlags get()   = targetList("optOptFlags")
+    val optDebugFlags get() = targetList("optDebugFlags")
+}
+
+interface LldFlags : TargetableExternalStorage {
+    val lldFlags get()      = targetList("lld")
+}
+
 interface Configurables : TargetableExternalStorage {
 
     val target: KonanTarget
 
     val llvmHome get() = hostString("llvmHome")
     val llvmVersion get() = hostString("llvmVersion")
+    val libffiDir get() = hostString("libffiDir")
 
     // TODO: Delegate to a map?
-    val llvmLtoNooptFlags get() = targetList("llvmLtoNooptFlags")
-    val llvmLtoOptFlags get() = targetList("llvmLtoOptFlags")
-    val llvmLtoFlags get() = targetList("llvmLtoFlags")
-    val llvmLtoDynamicFlags get() = targetList("llvmLtoDynamicFlags")
     val entrySelector get() = targetList("entrySelector")
     val linkerOptimizationFlags get() = targetList("linkerOptimizationFlags")
     val linkerKonanFlags get() = targetList("linkerKonanFlags")
     val linkerNoDebugFlags get() = targetList("linkerNoDebugFlags")
     val linkerDynamicFlags get() = targetList("linkerDynamicFlags")
     val llvmDebugOptFlags get() = targetList("llvmDebugOptFlags")
+    val llvmDebugLlcFlags get() = targetList("llvmDebugLlcFlags")
     val targetSysRoot get() = targetString("targetSysRoot")
-    val libffiDir get() = targetString("libffiDir")
 
     // Notice: these ones are host-target.
     val targetToolchain get() = hostTargetString("targetToolchain")
@@ -45,22 +68,23 @@ interface Configurables : TargetableExternalStorage {
     val absoluteTargetSysRoot get() = absolute(targetSysRoot)
     val absoluteTargetToolchain get() = absolute(targetToolchain)
     val absoluteLlvmHome get() = absolute(llvmHome)
-    val absoluteLibffiDir get() = absolute(libffiDir)
 }
 
-interface NonAppleConfigurables : Configurables {
+interface TargetableConfigurables : Configurables {
     val targetArg get() = targetString("quadruple")
 }
 
-interface AppleConfigurables : Configurables {
+interface AppleConfigurables : Configurables, ClangFlags {
     val arch get() = targetString("arch")!!
     val osVersionMin get() = targetString("osVersionMin")!!
     val osVersionMinFlagLd get() = targetString("osVersionMinFlagLd")!!
+    val additionalToolsDir get() = hostString("additionalToolsDir")
+    val absoluteAdditionalToolsDir get() = absolute(additionalToolsDir)
 }
 
-interface MingwConfigurables : NonAppleConfigurables
+interface MingwConfigurables : TargetableConfigurables, ClangFlags
 
-interface LinuxBasedConfigurables : NonAppleConfigurables {
+interface LinuxBasedConfigurables : TargetableConfigurables, ClangFlags {
     val gccToolchain get() = hostString("gccToolchain")
     val absoluteGccToolchain get() = absolute(gccToolchain)
 
@@ -73,23 +97,12 @@ interface LinuxBasedConfigurables : NonAppleConfigurables {
 interface LinuxConfigurables : LinuxBasedConfigurables
 interface LinuxMIPSConfigurables : LinuxBasedConfigurables
 interface RaspberryPiConfigurables : LinuxBasedConfigurables
-interface AndroidConfigurables : NonAppleConfigurables
+interface AndroidConfigurables : TargetableConfigurables, ClangFlags
 
-interface WasmConfigurables : NonAppleConfigurables {
-    val s2wasmFlags get()   = targetList("s2wasmFlags")
+interface WasmConfigurables : TargetableConfigurables, OptFlags, LlcFlags, LldFlags
 
-    val llcFlags get()      = targetList("llcFlags")
-    val llcNooptFlags get() = targetList("llcNooptFlags")
-    val llcOptFlags get()   = targetList("llcOptFlags")
-    val llcDebugFlags get() = targetList("llcDebugFlags")
-
-    val optFlags get()      = targetList("optFlags")
-    val optNooptFlags get() = targetList("optNooptFlags")
-    val optOptFlags get()   = targetList("optOptFlags")
-    val optDebugFlags get() = targetList("optDebugFlags")
-}
-
-interface ZephyrConfigurables : NonAppleConfigurables {
+// Codegen for Zephyr calls opt and llc with predefined set of flags
+// so there is no need for OptFlags or LlcFlags.
+interface ZephyrConfigurables : TargetableConfigurables {
     val boardSpecificClangFlags get() = targetList("boardSpecificClangFlags")
 }
-

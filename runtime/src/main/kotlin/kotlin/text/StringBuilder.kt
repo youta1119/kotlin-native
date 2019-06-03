@@ -1,86 +1,17 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.text
 
-// ByteArray -> String (UTF-8 -> UTF-16)
-
-@Deprecated("Use ByteArray.stringFromUtf8()", ReplaceWith("array.stringFromUtf8(start, end)"))
-fun fromUtf8Array(array: ByteArray, start: Int, size: Int) = array.stringFromUtf8Impl(start, size)
-
-@Deprecated("Use String.toUtf8()", ReplaceWith("string.toUtf8(start, end)"))
-fun toUtf8Array(string: String, start: Int, size: Int) : ByteArray = string.toUtf8(start, size)
-
 /**
- * Converts an UTF-8 array into a [String]. Replaces invalid input sequences with a default character.
+ * Clears the content of this string builder making it empty.
+ *
+ * @sample samples.text.Strings.clearStringBuilder
  */
-fun ByteArray.stringFromUtf8(start: Int = 0, size: Int = this.size) : String =
-        stringFromUtf8Impl(start, size)
-
-@SymbolName("Kotlin_ByteArray_stringFromUtf8")
-private external fun ByteArray.stringFromUtf8Impl(start: Int, size: Int) : String
-
-/**
- * Converts an UTF-8 array into a [String]. Throws [IllegalCharacterConversionException] if the input is invalid.
- */
-fun ByteArray.stringFromUtf8OrThrow(start: Int = 0, size: Int = this.size) : String =
-        stringFromUtf8OrThrowImpl(start, size)
-
-@SymbolName("Kotlin_ByteArray_stringFromUtf8OrThrow")
-private external fun ByteArray.stringFromUtf8OrThrowImpl(start: Int, size: Int) : String
-
-// String -> ByteArray (UTF-16 -> UTF-8)
-/**
- * Converts a [String] into an UTF-8 array. Replaces invalid input sequences with a default character.
- */
-fun String.toUtf8(start: Int = 0, size: Int = this.length) : ByteArray =
-        toUtf8Impl(start, size)
-
-@SymbolName("Kotlin_String_toUtf8")
-private external fun String.toUtf8Impl(start: Int, size: Int) : ByteArray
-
-/**
- * Converts a [String] into an UTF-8 array. Throws [IllegalCharacterConversionException] if the input is invalid.
- */
-fun String.toUtf8OrThrow(start: Int = 0, size: Int = this.length) : ByteArray =
-        toUtf8OrThrowImpl(start, size)
-
-@SymbolName("Kotlin_String_toUtf8OrThrow")
-private external fun String.toUtf8OrThrowImpl(start: Int, size: Int) : ByteArray
-
-// TODO: make it somewhat private?
-@SymbolName("Kotlin_String_fromCharArray")
-external fun fromCharArray(array: CharArray, start: Int, size: Int) : String
-
-/**
- * Builds new string by populating newly created [StringBuilder] using provided [builderAction]
- * and then converting it to [String].
- */
-@kotlin.internal.InlineOnly
-public inline fun buildString(builderAction: StringBuilder.() -> Unit): String =
-        StringBuilder().apply(builderAction).toString()
-
-/**
- * Builds new string by populating newly created [StringBuilder] initialized with the given [capacity]
- * using provided [builderAction] and then converting it to [String].
- */
-@SinceKotlin("1.1")
-@kotlin.internal.InlineOnly
-public inline fun buildString(capacity: Int, builderAction: StringBuilder.() -> Unit): String =
-        StringBuilder(capacity).apply(builderAction).toString()
+@SinceKotlin("1.3")
+public actual fun StringBuilder.clear(): StringBuilder = apply { setLength(0) }
 
 /**
  * Sets the character at the specified [index] to the specified [value].
@@ -88,35 +19,41 @@ public inline fun buildString(capacity: Int, builderAction: StringBuilder.() -> 
 @kotlin.internal.InlineOnly
 public inline operator fun StringBuilder.set(index: Int, value: Char): Unit = this.setCharAt(index, value)
 
-class StringBuilder private constructor (
-        private var array: CharArray
-) : CharSequence, Appendable {
-    constructor() : this(10)
+actual class StringBuilder private constructor (
+        private var array: CharArray) : CharSequence, Appendable {
 
-    constructor(capacity: Int) : this(CharArray(capacity))
+    actual constructor() : this(10)
+
+    actual constructor(capacity: Int) : this(CharArray(capacity))
 
     constructor(string: String) : this(string.toCharArray()) {
-        length = array.size
+        _length = array.size
     }
 
-    constructor(sequence: CharSequence): this(sequence.length) {
-        append(sequence)
+    actual constructor(content: CharSequence): this(content.length) {
+        append(content)
     }
 
-    override var length: Int = 0
+    private var _length: Int = 0
         set(capacity) {
             ensureCapacity(capacity)
             field = capacity
         }
+    actual override val length: Int
+        get() = _length
 
-    override fun get(index: Int): Char {
+    actual override fun get(index: Int): Char {
         checkIndex(index)
         return array[index]
     }
 
-    override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = substring(startIndex, endIndex)
+    fun setLength(l: Int) {
+        _length = l
+    }
 
-    override fun toString(): String = fromCharArray(array, 0, length)
+    actual override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = substring(startIndex, endIndex)
+
+    override fun toString(): String = fromCharArray(array, 0, _length)
 
     fun substring(startIndex: Int, endIndex: Int): String {
         checkInsertIndex(startIndex)
@@ -125,8 +62,8 @@ class StringBuilder private constructor (
     }
 
     fun trimToSize() {
-        if (length < array.size)
-            array = array.copyOf(length)
+        if (_length < array.size)
+            array = array.copyOf(_length)
     }
 
     fun ensureCapacity(capacity: Int) {
@@ -139,22 +76,22 @@ class StringBuilder private constructor (
     }
 
     // Based on Apache Harmony implementation.
-    fun reverse(): StringBuilder {
+    actual fun reverse(): StringBuilder {
         if (this.length < 2) {
             return this
         }
-        var end = length - 1
+        var end = _length - 1
         var front = 0
         var frontLeadingChar = array[0]
         var endTrailingChar = array[end]
         var allowFrontSurrogate = true
         var allowEndSurrogate = true
-        while (front < length / 2) {
+        while (front < _length / 2) {
 
             var frontTrailingChar = array[front + 1]
             var endLeadingChar = array[end - 1]
             var surrogateAtFront = allowFrontSurrogate && frontTrailingChar.isLowSurrogate() && frontLeadingChar.isHighSurrogate()
-            if (surrogateAtFront && length < 3) {
+            if (surrogateAtFront && _length < 3) {
                 return this
             }
             var surrogateAtEnd = allowEndSurrogate && endTrailingChar.isLowSurrogate() && endLeadingChar.isHighSurrogate()
@@ -199,7 +136,7 @@ class StringBuilder private constructor (
             front++
             end--
         }
-        if (length % 2 == 1 && (!allowEndSurrogate || !allowFrontSurrogate)) {
+        if (_length % 2 == 1 && (!allowEndSurrogate || !allowFrontSurrogate)) {
             array[end] = if (allowFrontSurrogate) endTrailingChar else frontLeadingChar
         }
         return this
@@ -213,7 +150,7 @@ class StringBuilder private constructor (
             array[i] = array[i - 1]
         }
         array[index] = c
-        length++
+        _length++
         return this
     }
 
@@ -231,14 +168,14 @@ class StringBuilder private constructor (
         val extraLength = end - start
         ensureExtraCapacity(extraLength)
 
-        array.copyRangeTo(array, index, length, index + extraLength)
+        array.copyInto(array, startIndex = index, endIndex = _length, destinationOffset = index + extraLength)
         var from = start
         var to = index
         while (from < end) {
             array[to++] = toInsert[from++]
         }
 
-        length += extraLength
+        _length += extraLength
         return this
     }
 
@@ -246,15 +183,22 @@ class StringBuilder private constructor (
         checkInsertIndex(index)
         ensureExtraCapacity(chars.size)
 
-        array.copyRangeTo(array, index, length, index + chars.size)
-        chars.copyRangeTo(array, 0, chars.size, index)
+        array.copyInto(array, startIndex = index, endIndex = _length, destinationOffset = index + chars.size)
+        chars.copyInto(array, destinationOffset = index)
 
-        length += chars.size
+        _length += chars.size
         return this
     }
 
-    fun insert(index: Int, string: String): StringBuilder = insert(index, string.toCharArray())
+    fun insert(index: Int, string: String): StringBuilder {
+        checkInsertIndex(index)
+        ensureExtraCapacity(string.length)
+        array.copyInto(array, startIndex = index, endIndex = _length, destinationOffset = index + string.length)
+        _length += insertString(array, index, string)
+        return this
+    }
 
+    // TODO: optimize those!
     fun insert(index: Int, value: Boolean) = insert(index, value.toString())
     fun insert(index: Int, value: Byte)    = insert(index, value.toString())
     fun insert(index: Int, value: Short)   = insert(index, value.toString())
@@ -266,51 +210,60 @@ class StringBuilder private constructor (
 
 
     // Of Appenable.
-    override fun append(c: Char) : StringBuilder {
+    actual override fun append(c: Char) : StringBuilder {
         ensureExtraCapacity(1)
-        array[length++] = c
+        array[_length++] = c
         return this
     }
 
-    override fun append(csq: CharSequence?): StringBuilder {
+    actual override fun append(csq: CharSequence?): StringBuilder {
         // Kotlin/JVM processes null as if the argument was "null" char sequence.
         val toAppend = csq ?: "null"
         return append(toAppend, 0, toAppend.length)
     }
 
-    override fun append(csq: CharSequence?, start: Int, end: Int): StringBuilder {
+    actual override fun append(csq: CharSequence?, start: Int, end: Int): StringBuilder {
         // Kotlin/JVM processes null as if the argument was "null" char sequence.
         val toAppend = csq ?: "null"
         if (start < 0 || end < start || start > toAppend.length) throw IndexOutOfBoundsException()
         ensureExtraCapacity(end - start)
         var index = start
         while (index < end)
-            array[length++] = toAppend[index++]
+            array[_length++] = toAppend[index++]
         return this
     }
 
     fun append(it: CharArray): StringBuilder {
         ensureExtraCapacity(it.size)
-        it.copyRangeTo(array, 0, it.size, length)
-        length += it.size
+        it.copyInto(array, _length)
+        _length += it.size
         return this
     }
 
-    fun append(it: String): StringBuilder = append(it.toCharArray())
+    fun append(it: String): StringBuilder {
+        ensureExtraCapacity(it.length)
+        _length += insertString(array, _length, it)
+        return this
+    }
 
+    // TODO: optimize those!
     fun append(it: Boolean) = append(it.toString())
     fun append(it: Byte) = append(it.toString())
     fun append(it: Short) = append(it.toString())
-    fun append(it: Int) = append(it.toString())
+    fun append(it: Int): StringBuilder {
+        ensureExtraCapacity(11)
+        _length += insertInt(array, _length, it)
+        return this
+    }
     fun append(it: Long) = append(it.toString())
     fun append(it: Float) = append(it.toString())
     fun append(it: Double) = append(it.toString())
-    fun append(it: Any?) = append(it.toString())
+    actual fun append(obj: Any?): StringBuilder = append(obj.toString())
 
     fun deleteCharAt(index: Int) {
         checkIndex(index)
-        array.copyRangeTo(array, index + 1, length, index)
-        --length
+        array.copyInto(array, startIndex = index + 1, endIndex = _length, destinationOffset = index)
+        --_length
     }
 
     fun setCharAt(index: Int, value: Char) {
@@ -321,18 +274,18 @@ class StringBuilder private constructor (
     // ---------------------------- private ----------------------------
 
     private fun ensureExtraCapacity(n: Int) {
-        ensureCapacity(length + n)
+        ensureCapacity(_length + n)
     }
 
     private fun checkIndex(index: Int) {
-        if (index < 0 || index >= length) throw IndexOutOfBoundsException()
+        if (index < 0 || index >= _length) throw IndexOutOfBoundsException()
     }
 
     private fun checkInsertIndex(index: Int) {
-        if (index < 0 || index > length) throw IndexOutOfBoundsException()
+        if (index < 0 || index > _length) throw IndexOutOfBoundsException()
     }
 
     private fun checkInsertIndexFrom(index: Int, fromIndex: Int) {
-        if (index < fromIndex || index > length) throw IndexOutOfBoundsException()
+        if (index < fromIndex || index > _length) throw IndexOutOfBoundsException()
     }
 }

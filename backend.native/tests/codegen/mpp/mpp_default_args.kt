@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package codegen.mpp.mpp_default_args
 
 import kotlin.test.*
@@ -15,6 +20,7 @@ fun box() {
     Test5().Inner().test()
 
     42.test6()
+    assertEquals(inlineFunction("OK"), "OK,0,null")
 }
 
 expect fun test1(x: Int = 42): Int
@@ -61,3 +67,9 @@ expect fun Int.test6(arg: Int = this)
 actual fun Int.test6(arg: Int) {
     assertEquals(arg, this)
 }
+
+// Default parameter in inline function.
+expect inline fun inlineFunction(a: String, b: Int = 0, c: () -> Double? = { null }): String
+
+actual inline fun inlineFunction(a: String, b: Int, c: () -> Double?): String = a + "," + b + "," + c()
+

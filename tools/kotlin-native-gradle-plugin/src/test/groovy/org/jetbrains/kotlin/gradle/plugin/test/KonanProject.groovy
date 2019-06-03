@@ -17,6 +17,7 @@
 package org.jetbrains.kotlin.gradle.plugin.test
 
 import org.gradle.testkit.runner.GradleRunner
+import org.gradle.util.GradleVersion
 import org.jetbrains.kotlin.konan.target.HostManager
 
 import java.nio.file.Files
@@ -49,6 +50,7 @@ class KonanProject {
     File konanBuildDir
 
     String konanHome
+    String gradleVersion
 
     File         buildFile
     File         propertiesFile
@@ -85,7 +87,7 @@ class KonanProject {
         this.targets = targets
         projectPath = projectDir.toPath()
         konanBuildDir = projectPath.resolve('build/konan').toFile()
-        def konanHome = System.getProperty("konan.home")
+        def konanHome = System.getProperty("konan.home") ?: System.getProperty("org.jetbrains.kotlin.native.home")
         if (konanHome == null) {
             throw new IllegalStateException("konan.home isn't specified")
         }
@@ -95,10 +97,15 @@ class KonanProject {
         }
         // Escape windows path separator
         this.konanHome = escapeBackSlashes(konanHomeDir.canonicalPath)
+        this.gradleVersion = System.getProperty("gradleVersion") ?: GradleVersion.current().version
     }
 
     GradleRunner createRunner(boolean withDebug = true) {
-        return GradleRunner.create().withProjectDir(projectDir).withPluginClasspath().withDebug(withDebug)
+        return GradleRunner.create()
+                .withProjectDir(projectDir)
+                .withPluginClasspath()
+                .withDebug(withDebug)
+                .withGradleVersion(gradleVersion)
     }
 
     /** Creates a subdirectory specified by the given path. */
@@ -214,7 +221,7 @@ class KonanProject {
     /** Generates gradle.properties file with the konan.home and konan.jvmArgs properties set. */
     File generatePropertiesFile(String konanHome, String konanJvmArgs = System.getProperty("konan.jvmArgs") ?: "") {
         propertiesFile = createFile(projectPath, "gradle.properties", """\
-            konan.home=$konanHome
+            org.jetbrains.kotlin.native.home=$konanHome
             ${!konanJvmArgs.isEmpty() ? "konan.jvmArgs=$konanJvmArgs\n" : ""}
         """.stripIndent())
         return propertiesFile

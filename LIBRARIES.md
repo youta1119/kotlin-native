@@ -1,103 +1,210 @@
- # Kotlin/Native libraries
+# Kotlin/Native libraries
 
-  ## Kotlin compiler specifics
+## Kotlin compiler specifics
 
-To produce a library with Kotlin/Native compiler use `-produce library` or `-p library` flag. For example:
+To produce a library with the Kotlin/Native compiler use the `-produce library` or `-p library` flag. For example:
 
-    $ kotlinc foo.kt -p library -o bar
+<div class="sample" markdown="1" theme="idea" mode="shell">
 
-the above command will produce a `bar.klib` with compiled contents of `foo.kt`.
+```bash
+$ kotlinc foo.kt -p library -o bar
+```
 
-To link a library use `-library <name>` or `-l <name>` flag. For example:
+</div>
 
-    $ kotlinc qux.kt -l bar
+the above command will produce a `bar.klib` with the compiled contents of `foo.kt`.
 
-the above command will produce `program.kexe` out of `qux.kt` and `bar.klib`
+To link to a library use the `-library <name>` or `-l <name>` flag. For example:
+
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ kotlinc qux.kt -l bar
+```
+
+</div>
 
 
-  ## cinterop tool specifics
+the above command will produce a `program.kexe` out of `qux.kt` and `bar.klib`
+
+
+## cinterop tool specifics
 
 The **cinterop** tool produces `.klib` wrappers for native libraries as its main output. 
-For example using the simple `stdio.def` native library definition file provided in your Kotlin/Native distribution
+For example, using the simple `libgit2.def` native library definition file provided in your Kotlin/Native distribution
 
-    $ cinterop -def  ./samples/csvparser/src/main/c_interop/stdio.def  -o stdio
+<div class="sample" markdown="1" theme="idea" mode="shell">
 
-we obtain `stdio.klib`. 
+```bash
+$ cinterop -def samples/gitchurn/src/nativeInterop/cinterop/libgit2.def -compiler-option -I/usr/local/include -o libgit2
+```
+
+</div>
+
+we will obtain `libgit2.klib`.
+
+See more details in [INTEROP.md](INTEROP.md)
 
 
-  ## klib utility
+## klib utility
 
-The **klib** library management utility allows one to inspect and install the libraries.
+The **klib** library management utility allows you to inspect and install the libraries.
 
 The following commands are available.
 
 To list library contents:
 
-        $ klib contents <name>
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ klib contents <name>
+```
+
+</div>
 
 To inspect the bookkeeping details of the library 
 
-        $ klib info <name>
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ klib info <name>
+```
+
+</div>
 
 To install the library to the default location use
 
-        $ klib install <name>
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ klib install <name>
+```
+
+</div>
 
 To remove the library from the default repository use 
 
-        $ klib remove <name>
+<div class="sample" markdown="1" theme="idea" mode="shell">
 
-All of the above commands accept an additional `-repository <directory>` argument to specify a repository other than the default one. 
+```bash
+$ klib remove <name>
+```
 
-        $ klib <command> <name> -repository <directory>
+</div>
+
+All of the above commands accept an additional `-repository <directory>` argument for specifying a repository different to the default one.
+
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ klib <command> <name> -repository <directory>
+```
+
+</div>
 
 
-  ## Several examples
+## Several examples
 
-First lets create a library:
+First let's create a library.
+Place the tiny library source code into `kotlinizer.kt`:
 
-    $ cinterop -h /usr/include/math.h -pkg libc.math -o math
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```kotlin
+package kotlinizer
+val String.kotlinized
+    get() = "Kotlin $this"
+```
+
+```bash
+$ kotlinc kotlinizer.kt -p library -o kotlinizer
+```
+
+</div>
 
 The library has been created in the current directory:
 
-    $ ls math.klib
-    math.klib
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ ls kotlinizer.klib
+kotlinizer.klib
+```
+
+</div>
 
 Now let's check out the contents of the library:
 
-    $ klib contents math
+<div class="sample" markdown="1" theme="idea" mode="shell">
 
-We can install `math` to the default repository:
+```bash
+$ klib contents kotlinizer
+```
 
-    $ klib install math
+</div>
 
-Remove any traces of it and its build process from the current directory:
+We can install `kotlinizer` to the default repository:
 
-    $ rm -rf ./math*
+<div class="sample" markdown="1" theme="idea" mode="shell">
 
-Create a very short program and place it into a `sin.kt` :
+```bash
+$ klib install kotlinizer
+```
 
-    import libc.math.*
-    fun main(args: Array<String>) {
-        println(sin(2.0))
-    }
+</div>
+
+Remove any traces of it from the current directory:
+
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ rm kotlinizer.klib
+```
+
+</div>
+
+Create a very short program and place it into a `use.kt` :
+
+<div class="sample" markdown="1" theme="idea" data-highlight-only>
+
+```kotlin
+import kotlinizer.*
+
+fun main(args: Array<String>) {
+    println("Hello, ${"world".kotlinized}!")
+}
+```
+
+</div>
 
 Now compile the program linking with the library we have just created:
 
-    $ kotlinc sin.kt -l math -o mysin
+<div class="sample" markdown="1" theme="idea" mode="shell">
 
-And run your program:
+```bash
+$ kotlinc use.kt -l kotlinizer -o kohello
+```
 
-    $ ./mysin.kexe
-    0.9092974268256817
+</div>
+
+And run the program:
+
+<div class="sample" markdown="1" theme="idea" mode="shell">
+
+```bash
+$ ./kohello.kexe
+Hello, Kotlin world!
+```
+
+</div>
 
 Have fun!
 
-  # Advanced topics
+# Advanced topics
 
- ## Library search sequence
+## Library search sequence
 
-When given `-library foo` flag, the compiler searches the `foo`  library in the following order:
+When given a `-library foo` flag, the compiler searches the `foo` library in the following order:
 
     * Current compilation directory or an absolute path.
 
@@ -107,16 +214,14 @@ When given `-library foo` flag, the compiler searches the `foo`  library in the 
 
     * Libraries installed in `$installation/klib` directory.
 
+## The library format
 
- ## The library format
-
-**WARNING**: the library format is *very* preliminary. It is subject to change right under your fingers. And it can incompatibly change from release to release until Kotlin/Native is stabilized.
-
-Kotlin/Native libraries are zip files containing predefined 
+Kotlin/Native libraries are zip files containing a predefined 
 directory structure, with the following layout:
 
 **foo.klib** when unpacked as **foo/** gives us:
 
+```yaml
   - foo/
     - targets/
       - $platform/
@@ -131,6 +236,7 @@ directory structure, with the following layout:
     - resources/
       - General resources such as images. (Not used yet).
     - manifest - A file in *java property* format describing the library.
+```
 
-    An exemplar layout can be found in `klib/stdlib` directory of your installation.
+An example layout can be found in `klib/stdlib` directory of your installation.
 

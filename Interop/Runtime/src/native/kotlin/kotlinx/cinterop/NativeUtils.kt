@@ -16,24 +16,54 @@
 
 package kotlinx.cinterop
 
-import konan.internal.Intrinsic
+import kotlin.native.internal.Intrinsic
+import kotlin.native.internal.TypedIntrinsic
+import kotlin.native.internal.IntrinsicType
 
-internal fun decodeFromUtf8(bytes: ByteArray): String = bytes.stringFromUtf8()
+internal fun decodeFromUtf8(bytes: ByteArray): String = bytes.decodeToString()
 
-fun encodeToUtf8(str: String): ByteArray = str.toUtf8()
+fun encodeToUtf8(str: String): ByteArray = str.encodeToByteArray()
 
-@Intrinsic
+@TypedIntrinsic(IntrinsicType.INTEROP_BITS_TO_FLOAT)
 external fun bitsToFloat(bits: Int): Float
 
-@Intrinsic
+@TypedIntrinsic(IntrinsicType.INTEROP_BITS_TO_DOUBLE)
 external fun bitsToDouble(bits: Long): Double
 
-@Intrinsic
+// TODO: deprecate.
+@TypedIntrinsic(IntrinsicType.INTEROP_SIGN_EXTEND)
 external fun <R : Number> Number.signExtend(): R
 
-@Intrinsic
+// TODO: deprecate.
+@TypedIntrinsic(IntrinsicType.INTEROP_NARROW)
 external fun <R : Number> Number.narrow(): R
+
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> Byte.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> Short.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> Int.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> Long.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> UByte.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> UShort.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> UInt.convert(): R
+@TypedIntrinsic(IntrinsicType.INTEROP_CONVERT) external fun <R : Any> ULong.convert(): R
 
 @Target(AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY_GETTER, AnnotationTarget.PROPERTY_SETTER, AnnotationTarget.FILE)
 @Retention(AnnotationRetention.SOURCE)
 internal annotation class JvmName(val name: String)
+
+fun cValuesOf(vararg elements: UByte): CValues<UByteVar> =
+        createValues(elements.size) { index -> this.value = elements[index] }
+
+fun cValuesOf(vararg elements: UShort): CValues<UShortVar> =
+        createValues(elements.size) { index -> this.value = elements[index] }
+
+fun cValuesOf(vararg elements: UInt): CValues<UIntVar> =
+        createValues(elements.size) { index -> this.value = elements[index] }
+
+fun cValuesOf(vararg elements: ULong): CValues<ULongVar> =
+        createValues(elements.size) { index -> this.value = elements[index] }
+
+fun UByteArray.toCValues() = cValuesOf(*this)
+fun UShortArray.toCValues() = cValuesOf(*this)
+fun UIntArray.toCValues() = cValuesOf(*this)
+fun ULongArray.toCValues() = cValuesOf(*this)

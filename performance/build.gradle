@@ -1,6 +1,12 @@
 buildscript {
+    ext.rootBuildDirectory = file('..')
+
+    apply from: "$rootBuildDirectory/gradle/loadRootProperties.gradle"
+    apply from: "$rootBuildDirectory/gradle/kotlinGradlePlugin.gradle"
     repositories {
-        mavenCentral()
+        maven {
+            url 'https://cache-redirector.jetbrains.com/jcenter'
+        }
         maven {
             url kotlinCompilerRepo
         }
@@ -8,119 +14,128 @@ buildscript {
 
     dependencies {
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
-        classpath "org.jetbrains.kotlin:kotlin-native-gradle-plugin:$gradlePluginVersion"
     }
 }
 
-repositories {
-    maven {
-        url kotlinCompilerRepo
+task konanRun {
+    subprojects.each {
+        dependsOn it.getTasksByName('konanRun', true)[0]
+    }
+}
+    
+task jvmRun {
+    subprojects.each {
+        dependsOn it.getTasksByName('jvmRun', true)[0]
     }
 }
 
-//TODO: property
-def jvmWarmup = 10000
-def nativeWarmup = 10
-
-ext."konan.home" = distDir
-
-apply plugin: 'kotlin'
-apply plugin: 'application'
-apply plugin: 'konan'
-
-checkKonanCompiler.dependsOn ':dist'
-
-konanArtifacts {
-    program('Ring') {
-        srcDir 'src/main/kotlin'
-        srcDir 'src/main/kotlin-native'
-        enableOptimizations true
+task clean {
+    subprojects.each {
+        dependsOn it.getTasksByName('clean', true)[0]
     }
-}
-
-sourceSets {
-    main.kotlin.srcDir 'src/main/kotlin'
-    main.kotlin.srcDir 'src/main/kotlin-jvm'
-}
-
-compileKotlin {
-    kotlinOptions.suppressWarnings = true
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-}
-
-dependencies {
-    compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlinVersion"
-}
-
-task jvmRun(type: JavaExec) {
-    dependsOn 'build'
-    def output = new ByteArrayOutputStream()
-    classpath sourceSets.main.runtimeClasspath
-    main = "MainKt"
-    args "$jvmWarmup"
-    standardOutput = output
     doLast {
-        dumpReport('jvmReport', output)
+        delete "${buildDir.absolutePath}"
     }
 }
 
-private void dumpReport(String name, ByteArrayOutputStream output) {
-    new File("${buildDir.absolutePath}/${name}.txt").withOutputStream {
-        it.write(output.toByteArray())
+defaultTasks 'konanRun'
+
+// Produce and send slack report.
+task slackReport(type: RegressionsReporter) {
+    def teamcityConfig = System.getenv("TEAMCITY_BUILD_PROPERTIES_FILE")
+    if (teamcityConfig) {
+        // Create folder for report (root Kotlin project settings make create report in separate folder).
+        def reportDirectory = new File(outputReport).parentFile
+        mkdir reportDirectory
+        def targetsResults = new File(new File("${rootBuildDirectory}"), "targetsResults").toString()
+        mkdir targetsResults
+        currentBenchmarksReportFile = "${buildDir.absolutePath}/${nativeJson}"
+        analyzer = MPPTools.findFile("${analyzerTool}${MPPTools.getNativeProgramExtension()}",
+                "${rootBuildDirectory}/${analyzerToolDirectory}")
+        htmlReport = outputReport
+        defaultBranch = project.findProperty('kotlin.native.default.branch') ?: "master"
+        def target = System.getProperty("os.name")
+        summaryFile = "${targetsResults}/${target}.txt"
+        bundleBuild = project.findProperty('kotlin.bundleBuild') == null ? false : true
     }
 }
 
-task konanRun(type: Exec) {
-    dependsOn 'build'
-    def output = new ByteArrayOutputStream()
-    commandLine konanArtifacts.Ring.getByTarget('host').artifact.absolutePath, "$nativeWarmup"
-    standardOutput = output
-    doLast {
-        dumpReport('konanReport', output)
+task slackSummary(type: RegressionsSummaryReporter) {
+    targetsResultFiles = ['Linux': "${rootBuildDirectory}/targetsResults/Linux.txt".toString(),
+                          'MacOSX': "${rootBuildDirectory}/targetsResults/Mac OS X.txt".toString(),
+                          'Windows': "${rootBuildDirectory}/targetsResults/Windows 10.txt".toString()]
+}
+
+private def uploadBenchmarkResultToBintray(String fileName) {
+    def teamcityConfig = System.getenv("TEAMCITY_BUILD_PROPERTIES_FILE")
+    if (teamcityConfig) {
+        def buildProperties = new Properties()
+        buildProperties.load(new FileInputStream(teamcityConfig))
+        def user = buildProperties.getProperty("bintray.user")
+        def password = buildProperties.getProperty("bintray.apikey")
+        def buildNumber = buildProperties.getProperty("build.number")
+        def target = System.getProperty("os.name").replaceAll("\\s", "")
+        MPPTools.uploadFileToBintray("${bintrayUrl}", "${bintrayRepo}",
+                buildNumber, "${bintrayPackage}", "${target}/${buildNumber}/${fileName}",
+                "${buildDir.absolutePath}/${fileName}", user, password)
     }
 }
 
-startScripts{
-    setEnabled(false)
-}
-
-task bench(type:DefaultTask) {
-    dependsOn jvmRun
-    dependsOn konanRun
-
-    doLast {
-        def jvmReport = new Report(project.file("build/jvmReport.txt"))
-        def konanReport = new Report(project.file("build/konanReport.txt"))
-        def average = "none"
-        def absoluteAverage = "none"
-        jvmReport.report.each { k, v ->
-            def konanValue = konanReport.report[k]
-            def ratio = String.format('%.2f', konanValue/v)
-            def formattedKonanValue = String.format('%.2f', konanValue/1000)
-            if (k == 'RingAverage') {
-                average = ratio
-                absoluteAverage = formattedKonanValue
-            }
-            println("$k : absolute = $formattedKonanValue us, ratio = $ratio")
-            if (System.getenv("TEAMCITY_BUILD_PROPERTIES_FILE") != null)
-                println("##teamcity[buildStatisticValue key='$k' value='$ratio']")
+task registerBuild(type: BuildRegister) {
+    def analyzerBinary = MPPTools.findFile("${analyzerTool}${MPPTools.getNativeProgramExtension()}",
+            "${rootBuildDirectory}/${analyzerToolDirectory}")
+    if (analyzerBinary != null) {
+        onlyBranch = project.findProperty('kotlin.register.branch')
+        // Get bundle size.
+        bundleSize = null
+        if (project.findProperty('kotlin.bundleBuild') != null) {
+            def dist = findProperty('org.jetbrains.kotlin.native.home') ?: 'dist'
+            dist = (new File(dist)).isAbsolute() ? dist : "${project.getProjectDir()}/$dist"
+            bundleSize = (new File(dist)).directorySize()
         }
-
-        println()
-        println("Average Ring score: absolute = $absoluteAverage us, ratio = $average")
+        currentBenchmarksReportFile = "${buildDir.absolutePath}/${nativeJson}"
+        analyzer = analyzerBinary
     }
 }
 
-
-class Report {
-    def Map<String, Double> report = new TreeMap()
-
-    Report(File path) {
-        path.readLines().drop(3).findAll { it.split(':').length == 2 }.each {
-            def p = it.split(':')
-            report.put(p[0].trim(), Double.parseDouble(p[1].trim()))
+def mergeReports(String fileName) {
+    def reports = []
+    subprojects.each {
+        def reportFile = new File("${it.buildDir.absolutePath}/${fileName}")
+        if (reportFile.exists()) {
+            reports.add(reportFile)
         }
+    }
+    def output = MPPTools.mergeReports(reports)
+    mkdir buildDir.absolutePath
+    new File("${buildDir.absolutePath}/${fileName}").write(output)
+}
+
+task mergeNativeReports {
+    doLast {
+        mergeReports(nativeJson)
+        uploadBenchmarkResultToBintray(nativeJson)
+    }
+}
+
+task mergeJvmReports {
+    doLast {
+        mergeReports(jvmJson)
+        uploadBenchmarkResultToBintray(jvmJson)
+    }
+}
+
+subprojects.each {
+    it.getTasksByName('jvmJsonReport', true)[0].finalizedBy mergeJvmReports
+    it.getTasksByName('konanJsonReport', true)[0].finalizedBy mergeNativeReports
+}
+
+task teamCityStat(type:Exec) {
+    def extension = MPPTools.getNativeProgramExtension()
+    def analyzer = MPPTools.findFile("${analyzerTool}${extension}", "${rootBuildDirectory}/${analyzerToolDirectory}")
+    if (analyzer != null) {
+        commandLine "${analyzer}", "-r", "teamcity", "${buildDir.absolutePath}/${nativeJson}"
+    } else {
+        println("No analyzer $analyzerTool found in subdirectories of ${rootBuildDirectory}/${analyzerToolDirectory}")
     }
 }

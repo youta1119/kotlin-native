@@ -16,16 +16,24 @@
 
 package org.jetbrains.kotlin.gradle.plugin.test
 
+import spock.lang.Ignore
+
 import java.nio.file.Files
 import java.nio.file.Paths
 
 class MultiplatformSpecification extends BaseKonanSpecification {
 
     public static final String KOTLIN_VERSION = System.getProperty("kotlin.version")
+    public static final String KOTLIN_REPO = System.getProperty("kotlin.repo")
     public static final String DEFAULT_COMMON_BUILD_FILE_CONTENT = """\
         buildscript {
             repositories {
-                jcenter()
+                maven {
+                  url = '$KOTLIN_REPO'
+                }
+                maven {
+                   url = 'https://cache-redirector.jetbrains.com/jcenter'
+                }
             }
             dependencies {
                 classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$KOTLIN_VERSION"
@@ -35,7 +43,12 @@ class MultiplatformSpecification extends BaseKonanSpecification {
         apply plugin: 'kotlin-platform-common'
         
         repositories {
-            jcenter()
+            maven {
+               url = '$KOTLIN_REPO'
+            }
+            maven {
+               url = 'https://cache-redirector.jetbrains.com/jcenter'
+            }
         }
 
         dependencies {
@@ -71,7 +84,17 @@ class MultiplatformSpecification extends BaseKonanSpecification {
             createCommonSource(commonDirectory,
                     ["src", "main", "kotlin"],
                     "common.kt",
-                    "expect fun foo(): Int")
+                    """\
+                        @file:Suppress("EXPERIMENTAL_API_USAGE_ERROR")
+                        @OptionalExpectation
+                        expect annotation class Optional()
+
+                        @Optional
+                        fun opt() = 42
+                        
+                        expect fun foo(): Int
+                    """.stripIndent()
+            )
 
             it.generateSrcFile("platform.kt", "actual fun foo() = 42")
             it.buildFile.append("""
@@ -304,6 +327,7 @@ class MultiplatformSpecification extends BaseKonanSpecification {
         result.output.contains("has an 'expectedBy' dependency to non-common project")
     }
 
+    @Ignore("TODO in the Big Kotlin plugin")
     def 'Build should fail if custom common source set doesn\'t exist'() {
         when:
         def project = KonanProject.createEmpty(projectDirectory) { KonanProject it ->

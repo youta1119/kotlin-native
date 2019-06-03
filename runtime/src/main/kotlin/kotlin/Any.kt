@@ -1,20 +1,11 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin
+
+import kotlin.native.internal.ExportTypeInfo
 
 /**
  * The root of the Kotlin class hierarchy. Every Kotlin class has [Any] as a superclass.
@@ -25,25 +16,24 @@ public open class Any {
      * Indicates whether some other object is "equal to" this one. Implementations must fulfil the following
      * requirements:
      *
-     * * Reflexive: for any non-null reference value x, x.equals(x) should return true.
-     * * Symmetric: for any non-null reference values x and y, x.equals(y) should return true if and only if y.equals(x) returns true.
-     * * Transitive:  for any non-null reference values x, y, and z, if x.equals(y) returns true and y.equals(z) returns true, then x.equals(z) should return true
-     * * Consistent:  for any non-null reference values x and y, multiple invocations of x.equals(y) consistently return true or consistently return false, provided no information used in equals comparisons on the objects is modified.
+     * * Reflexive: for any non-null value `x`, `x.equals(x)` should return true.
+     * * Symmetric: for any non-null values `x` and `y`, `x.equals(y)` should return true if and only if `y.equals(x)` returns true.
+     * * Transitive:  for any non-null values `x`, `y`, and `z`, if `x.equals(y)` returns true and `y.equals(z)` returns true, then `x.equals(z)` should return true.
+     * * Consistent:  for any non-null values `x` and `y`, multiple invocations of `x.equals(y)` consistently return true or consistently return false, provided no information used in `equals` comparisons on the objects is modified.
+     * * Never equal to null: for any non-null value `x`, `x.equals(null)` should return false.
      *
-     * Note that the `==` operator in Kotlin code is translated into a call to [equals] when objects on both sides of the
-     * operator are not null.
+     * Read more about [equality](https://kotlinlang.org/docs/reference/equality.html) in Kotlin.
      */
     @SymbolName("Kotlin_Any_equals")
     external public open operator fun equals(other: Any?): Boolean
 
     /**
-     * Returns a hash code value for the object.  The general contract of hashCode is:
+     * Returns a hash code value for the object.  The general contract of `hashCode` is:
      *
-     * * Whenever it is invoked on the same object more than once, the hashCode method must consistently return the same integer, provided no information used in equals comparisons on the object is modified.
-     * * If two objects are equal according to the equals() method, then calling the hashCode method on each of the two objects must produce the same integer result.
+     * * Whenever it is invoked on the same object more than once, the `hashCode` method must consistently return the same integer, provided no information used in `equals` comparisons on the object is modified.
+     * * If two objects are equal according to the `equals()` method, then calling the `hashCode` method on each of the two objects must produce the same integer result.
      */
-    @SymbolName("Kotlin_Any_hashCode")
-    external public open fun hashCode(): Int
+    public open fun hashCode(): Int = this.identityHashCode()
 
     /**
      * Returns a string representation of the object.
@@ -51,10 +41,13 @@ public open class Any {
     public open fun toString(): String {
         val kClass = this::class
         val className = kClass.qualifiedName ?: kClass.simpleName ?: "<object>"
+        // TODO: consider using [identityHashCode].
         val unsignedHashCode = this.hashCode().toLong() and 0xffffffffL
         val hashCodeStr = unsignedHashCode.toString(16)
         return "$className@$hashCodeStr"
     }
 }
 
-public fun Any?.hashCode() = if (this != null) this.hashCode() else 0
+@PublishedApi
+@SymbolName("Kotlin_Any_hashCode")
+external internal fun Any.identityHashCode(): Int

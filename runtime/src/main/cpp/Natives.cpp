@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "Assert.h"
+#include "KAssert.h"
 #include "Exceptions.h"
 #include "Memory.h"
 #include "Natives.h"
@@ -43,8 +43,12 @@ OBJ_GETTER0(Kotlin_getCurrentStackTrace) {
   RETURN_RESULT_OF0(GetCurrentStackTrace);
 }
 
+OBJ_GETTER(Kotlin_getStackTraceStrings, KConstRef stackTrace) {
+  RETURN_RESULT_OF(GetStackTraceStrings, stackTrace);
+}
+
 // TODO: consider handling it with compiler magic instead.
-OBJ_GETTER0(Kotlin_konan_internal_undefined) {
+OBJ_GETTER0(Kotlin_native_internal_undefined) {
   RETURN_OBJ(nullptr);
 }
 
@@ -72,6 +76,10 @@ void Kotlin_system_exitProcess(KInt status) {
 
 const void* Kotlin_Any_getTypeInfo(KConstRef obj) {
   return obj->type_info();
+}
+
+void Kotlin_CPointer_CopyMemory(KNativePtr to, KNativePtr from, KInt count) {
+  memcpy(to, from, count);
 }
 
 }  // extern "C"

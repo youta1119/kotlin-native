@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package codegen.kclass.kclass1
 
 import kotlin.test.*
@@ -31,7 +36,6 @@ class TestClass
 
 class App(testQualified: Boolean) {
 
-    @Volatile // This could be noop in Kotlin Native, or the equivalent of volatile in C.
     var type = dsl {
         kClass {
             //kClass {  } // This should error if uncommented because of `@DslMarker`.

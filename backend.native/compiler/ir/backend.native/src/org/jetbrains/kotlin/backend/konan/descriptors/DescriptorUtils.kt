@@ -1,38 +1,26 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan.descriptors
 
-import org.jetbrains.kotlin.backend.konan.irasdescriptors.*
-import org.jetbrains.kotlin.backend.konan.isValueType
-import org.jetbrains.kotlin.backend.konan.llvm.functionName
-import org.jetbrains.kotlin.backend.konan.llvm.localHash
-import org.jetbrains.kotlin.descriptors.ClassKind
-import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.ir.declarations.IrClass
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
-import org.jetbrains.kotlin.ir.util.simpleFunctions
-import org.jetbrains.kotlin.name.FqName
+import org.jetbrains.kotlin.backend.konan.ir.*
+import org.jetbrains.kotlin.backend.konan.isInlinedNative
+import org.jetbrains.kotlin.descriptors.*
+import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
+import org.jetbrains.kotlin.ir.types.isUnit
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
+import org.jetbrains.kotlin.ir.util.isSuspend
+import org.jetbrains.kotlin.ir.util.overrides
 import org.jetbrains.kotlin.types.SimpleType
-import org.jetbrains.kotlin.types.typeUtil.isUnit
 
 /**
  * List of all implemented interfaces (including those which implemented by a super class)
  */
-internal val ClassDescriptor.implementedInterfaces: List<ClassDescriptor>
+internal val IrClass.implementedInterfaces: List<IrClass>
     get() {
         val superClassImplementedInterfaces = this.getSuperClassNotAny()?.implementedInterfaces ?: emptyList()
         val superInterfaces = this.getSuperInterfaces()
@@ -48,7 +36,7 @@ internal val ClassDescriptor.implementedInterfaces: List<ClassDescriptor>
  *
  * TODO: this method is actually a part of resolve and probably duplicates another one
  */
-internal fun IrSimpleFunction.resolveFakeOverride(): IrSimpleFunction {
+internal fun IrSimpleFunction.resolveFakeOverride(allowAbstract: Boolean = false): IrSimpleFunction {
     if (this.isReal) {
         return this
     }
@@ -83,20 +71,15 @@ internal fun IrSimpleFunction.resolveFakeOverride(): IrSimpleFunction {
         realSupers.toList().forEach { excludeOverridden(it) }
     }
 
-    return realSupers.first { it.modality != Modality.ABSTRACT }
+    return realSupers.first { allowAbstract || it.modality != Modality.ABSTRACT }
 }
 
-private val intrinsicAnnotation = FqName("konan.internal.Intrinsic")
+// TODO: don't forget to remove descriptor access here.
+internal val IrFunction.isTypedIntrinsic: Boolean
+    get() = this.descriptor.isTypedIntrinsic
 
-internal val FunctionDescriptor.isIntrinsic: Boolean
-    get() = this.annotations.hasAnnotation(intrinsicAnnotation)
-
-private val intrinsicTypes = setOf(
-        "kotlin.Boolean", "kotlin.Char",
-        "kotlin.Byte", "kotlin.Short",
-        "kotlin.Int", "kotlin.Long",
-        "kotlin.Float", "kotlin.Double"
-)
+internal val IrDeclaration.isFrozen: Boolean
+    get() = this.descriptor.isFrozen
 
 internal val arrayTypes = setOf(
         "kotlin.Array",
@@ -108,51 +91,48 @@ internal val arrayTypes = setOf(
         "kotlin.FloatArray",
         "kotlin.DoubleArray",
         "kotlin.BooleanArray",
-        "konan.ImmutableBinaryBlob"
+        "kotlin.native.ImmutableBlob",
+        "kotlin.native.internal.NativePtrArray"
 )
 
-internal val ClassDescriptor.isIntrinsic: Boolean
-    get() = this.fqNameSafe.asString() in intrinsicTypes
+
+internal val IrClass.isArray: Boolean
+    get() = this.fqNameForIrSerialization.asString() in arrayTypes
 
 
-internal val ClassDescriptor.isArray: Boolean
-    get() = this.fqNameSafe.asString() in arrayTypes
+fun IrClass.isAbstract() = this.modality == Modality.SEALED || this.modality == Modality.ABSTRACT
 
-
-internal val ClassDescriptor.isInterface: Boolean
-    get() = (this.kind == ClassKind.INTERFACE)
-
-fun ClassDescriptor.isAbstract() = this.modality == Modality.SEALED || this.modality == Modality.ABSTRACT
-        || this.kind == ClassKind.ENUM_CLASS
-
-internal fun FunctionDescriptor.hasValueTypeAt(index: Int): Boolean {
+internal fun IrFunction.hasValueTypeAt(index: Int): Boolean {
     when (index) {
-        0 -> return !isSuspend && returnType.let { (it.isValueType() || it.isUnit()) }
-        1 -> return extensionReceiverParameter.let { it != null && it.type.isValueType() }
-        else -> return this.valueParameters[index - 2].type.isValueType()
+        0 -> return !isSuspend && returnType.let { (it.isInlinedNative() || it.isUnit()) }
+        1 -> return dispatchReceiverParameter.let { it != null && it.type.isInlinedNative() }
+        2 -> return extensionReceiverParameter.let { it != null && it.type.isInlinedNative() }
+        else -> return this.valueParameters[index - 3].type.isInlinedNative()
     }
 }
 
-internal fun FunctionDescriptor.hasReferenceAt(index: Int): Boolean {
+internal fun IrFunction.hasReferenceAt(index: Int): Boolean {
     when (index) {
-        0 -> return isSuspend || returnType.let { !it.isValueType() && !it.isUnit() }
-        1 -> return extensionReceiverParameter.let { it != null && !it.type.isValueType() }
-        else -> return !this.valueParameters[index - 2].type.isValueType()
+        0 -> return isSuspend || returnType.let { !it.isInlinedNative() && !it.isUnit() }
+        1 -> return dispatchReceiverParameter.let { it != null && !it.type.isInlinedNative() }
+        2 -> return extensionReceiverParameter.let { it != null && !it.type.isInlinedNative() }
+        else -> return !this.valueParameters[index - 3].type.isInlinedNative()
     }
 }
 
-private fun FunctionDescriptor.needBridgeToAt(target: FunctionDescriptor, index: Int)
+private fun IrFunction.needBridgeToAt(target: IrFunction, index: Int)
         = hasValueTypeAt(index) xor target.hasValueTypeAt(index)
 
-internal fun FunctionDescriptor.needBridgeTo(target: FunctionDescriptor)
-        = (0..this.valueParameters.size + 1).any { needBridgeToAt(target, it) }
+internal fun IrFunction.needBridgeTo(target: IrFunction)
+        = (0..this.valueParameters.size + 2).any { needBridgeToAt(target, it) }
 
-internal val SimpleFunctionDescriptor.target: SimpleFunctionDescriptor
-    get() = (if (modality == Modality.ABSTRACT) this else resolveFakeOverride()).original
+internal val IrSimpleFunction.target: IrSimpleFunction
+    get() = (if (modality == Modality.ABSTRACT) this else resolveFakeOverride())
 
-internal val FunctionDescriptor.target: FunctionDescriptor get() = when (this) {
-    is SimpleFunctionDescriptor -> this.target
-    is ConstructorDescriptor -> this
+internal val IrFunction.target: IrFunction
+    get() = when (this) {
+    is IrSimpleFunction -> this.target
+    is IrConstructor -> this
     else -> error(this)
 }
 
@@ -162,7 +142,7 @@ internal enum class BridgeDirection {
     TO_VALUE_TYPE
 }
 
-private fun FunctionDescriptor.bridgeDirectionToAt(target: FunctionDescriptor, index: Int)
+private fun IrFunction.bridgeDirectionToAt(target: IrFunction, index: Int)
        = when {
             hasValueTypeAt(index) && target.hasReferenceAt(index) -> BridgeDirection.FROM_VALUE_TYPE
             hasReferenceAt(index) && target.hasValueTypeAt(index) -> BridgeDirection.TO_VALUE_TYPE
@@ -170,7 +150,7 @@ private fun FunctionDescriptor.bridgeDirectionToAt(target: FunctionDescriptor, i
         }
 
 internal class BridgeDirections(val array: Array<BridgeDirection>) {
-    constructor(parametersCount: Int): this(Array<BridgeDirection>(parametersCount + 2, { BridgeDirection.NOT_NEEDED }))
+    constructor(parametersCount: Int): this(Array<BridgeDirection>(parametersCount + 3, { BridgeDirection.NOT_NEEDED }))
 
     fun allNotNeeded(): Boolean = array.all { it == BridgeDirection.NOT_NEEDED }
 
@@ -201,11 +181,11 @@ internal class BridgeDirections(val array: Array<BridgeDirection>) {
     }
 }
 
-val SimpleFunctionDescriptor.allOverriddenDescriptors: Set<SimpleFunctionDescriptor>
+val IrSimpleFunction.allOverriddenFunctions: Set<IrSimpleFunction>
     get() {
-        val result = mutableSetOf<SimpleFunctionDescriptor>()
+        val result = mutableSetOf<IrSimpleFunction>()
 
-        fun traverse(function: SimpleFunctionDescriptor) {
+        fun traverse(function: IrSimpleFunction) {
             if (function in result) return
             result += function
             function.overriddenSymbols.forEach { traverse(it.owner) }
@@ -216,8 +196,8 @@ val SimpleFunctionDescriptor.allOverriddenDescriptors: Set<SimpleFunctionDescrip
         return result
     }
 
-internal fun SimpleFunctionDescriptor.bridgeDirectionsTo(
-        overriddenDescriptor: SimpleFunctionDescriptor
+internal fun IrSimpleFunction.bridgeDirectionsTo(
+        overriddenDescriptor: IrSimpleFunction
 ): BridgeDirections {
     val ourDirections = BridgeDirections(this.valueParameters.size)
     for (index in ourDirections.array.indices)
@@ -234,11 +214,31 @@ internal fun SimpleFunctionDescriptor.bridgeDirectionsTo(
     return ourDirections
 }
 
-tailrec internal fun DeclarationDescriptor.findPackage(): PackageFragmentDescriptor {
+internal tailrec fun IrDeclaration.findPackage(): IrPackageFragment {
     val parent = this.parent
-    return parent as? PackageFragmentDescriptor
-            ?: (parent as DeclarationDescriptor).findPackage()
+    return parent as? IrPackageFragment
+            ?: (parent as IrDeclaration).findPackage()
 }
 
-fun FunctionDescriptor.isComparisonDescriptor(map: Map<SimpleType, IrSimpleFunction>): Boolean =
+fun IrFunctionSymbol.isComparisonFunction(map: Map<SimpleType, IrSimpleFunctionSymbol>): Boolean =
         this in map.values
+
+val IrDeclaration.isPropertyAccessor get() =
+    this is IrSimpleFunction && this.correspondingProperty != null
+
+val IrDeclaration.isPropertyField get() =
+    this is IrField && this.correspondingProperty != null
+
+val IrDeclaration.isTopLevelDeclaration get() =
+    parent !is IrDeclaration && !this.isPropertyAccessor && !this.isPropertyField
+
+fun IrDeclaration.findTopLevelDeclaration(): IrDeclaration = when {
+    this.isTopLevelDeclaration ->
+        this
+    this.isPropertyAccessor ->
+        (this as IrSimpleFunction).correspondingProperty!!.findTopLevelDeclaration()
+    this.isPropertyField ->
+        (this as IrField).correspondingProperty!!.findTopLevelDeclaration()
+    else ->
+        (this.parent as IrDeclaration).findTopLevelDeclaration()
+}

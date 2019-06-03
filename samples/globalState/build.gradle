@@ -1,15 +1,20 @@
-apply plugin: 'konan'
+plugins {
+    id 'kotlin-multiplatform'
+}
 
-konan.targets = ['macbook', 'linux', 'mingw']
+// Determine host preset.
+def hostPreset = MPPTools.defaultHostPreset(project)
 
-konanArtifacts {
-    interop('global') {
-        defFile 'src/main/c_interop/global.def'
-    }
-
-    program('Globals') {
-        libraries {
-            artifact 'global'
+kotlin {
+    targets {
+        fromPreset(hostPreset, 'globalState') {
+            compilations.main.outputKinds 'EXECUTABLE'
+            compilations.main.entryPoint 'sample.globalstate.main'
+            compilations.main.cinterops {
+                global
+            }
         }
     }
 }
+
+MPPTools.createRunTask(project, 'runProgram', kotlin.targets.globalState)

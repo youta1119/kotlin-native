@@ -16,6 +16,7 @@
 
 package org.jetbrains.kotlin.konan.util
 
+import org.jetbrains.kotlin.konan.target.KonanTarget
 import java.io.File
 import java.io.StringReader
 import java.util.*
@@ -30,6 +31,10 @@ class DefFile(val file:File?, val config:DefFileConfig, val manifestAddendProper
     class DefFileConfig(private val properties: Properties) {
         val headers by lazy {
             properties.getSpaceSeparated("headers")
+        }
+
+        val modules by lazy {
+            properties.getSpaceSeparated("modules")
         }
 
         val language by lazy {
@@ -62,6 +67,10 @@ class DefFile(val file:File?, val config:DefFileConfig, val manifestAddendProper
 
         val excludedFunctions by lazy {
             properties.getSpaceSeparated("excludedFunctions")
+        }
+
+        val excludedMacros by lazy {
+            properties.getSpaceSeparated("excludedMacros")
         }
 
         val staticLibraries by lazy {
@@ -99,12 +108,15 @@ class DefFile(val file:File?, val config:DefFileConfig, val manifestAddendProper
         val exportForwardDeclarations by lazy {
             properties.getSpaceSeparated("exportForwardDeclarations")
         }
+
+        val disableDesignatedInitializerChecks by lazy {
+            properties.getProperty("disableDesignatedInitializerChecks")?.toBoolean() ?: false
+        }
     }
 }
 
-private fun Properties.getSpaceSeparated(name: String): List<String> {
-    return this.getProperty(name)?.split(' ')?.filter { it.isNotEmpty() } ?: emptyList()
-}
+private fun Properties.getSpaceSeparated(name: String): List<String> =
+        this.getProperty(name)?.let { parseSpaceSeparatedArgs(it) } ?: emptyList()
 
 private fun parseDefFile(file: File?, substitutions: Map<String, String>): Triple<Properties, Properties, List<String>> {
      val properties = Properties()
@@ -129,11 +141,21 @@ private fun parseDefFile(file: File?, substitutions: Map<String, String>): Tripl
          headerLines = emptyList()
      }
 
-     val propertiesReader = StringReader(propertyLines.joinToString(System.lineSeparator()))
+     // \ isn't escaping character in quotes, so replace them with \\.
+     val joinedLines = propertyLines.joinToString(System.lineSeparator())
+     val escapedTokens = joinedLines.split('"')
+     val postprocessProperties = escapedTokens.mapIndexed { index, token ->
+         if (index % 2 != 0) {
+             token.replace("""\\(?=.)""".toRegex(), Regex.escapeReplacement("""\\"""))
+         } else {
+             token
+         }
+     }.joinToString("\"")
+     val propertiesReader = StringReader(postprocessProperties)
      properties.load(propertiesReader)
 
      // Pass unsubstituted copy of properties we have obtained from `.def`
-     // to compiler `-maniest`.
+     // to compiler `-manifest`.
      val manifestAddendProperties = properties.duplicate()
 
      substitute(properties, substitutions)
@@ -142,3 +164,5 @@ private fun parseDefFile(file: File?, substitutions: Map<String, String>): Tripl
 }
 
 private fun Properties.duplicate() = Properties().apply { putAll(this@duplicate) }
+
+fun DefFile(file: File?, target: KonanTarget) = DefFile(file, defaultTargetSubstitutions(target))

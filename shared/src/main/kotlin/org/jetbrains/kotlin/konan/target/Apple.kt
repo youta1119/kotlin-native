@@ -28,11 +28,12 @@ class AppleConfigurablesImpl(
 
     private val sdkDependency = this.targetSysRoot!!
     private val toolchainDependency = this.targetToolchain!!
+    private val xcodeAddonDependency = this.additionalToolsDir!!
 
     override val absoluteTargetSysRoot: String get() = when (xcodePartsProvider) {
         is XcodePartsProvider.Local -> when (target) {
             KonanTarget.MACOS_X64 -> xcodePartsProvider.xcode.macosxSdk
-            KonanTarget.IOS_ARM64 -> xcodePartsProvider.xcode.iphoneosSdk
+            KonanTarget.IOS_ARM32, KonanTarget.IOS_ARM64 -> xcodePartsProvider.xcode.iphoneosSdk
             KonanTarget.IOS_X64 -> xcodePartsProvider.xcode.iphonesimulatorSdk
             else -> error(target)
         }
@@ -44,9 +45,14 @@ class AppleConfigurablesImpl(
         XcodePartsProvider.InternalServer -> absolute(toolchainDependency)
     }
 
+    override val absoluteAdditionalToolsDir: String get() = when (xcodePartsProvider) {
+        is XcodePartsProvider.Local -> xcodePartsProvider.xcode.additionalTools
+        XcodePartsProvider.InternalServer -> absolute(additionalToolsDir)
+    }
+
     override val dependencies get() = super.dependencies + when (xcodePartsProvider) {
         is XcodePartsProvider.Local -> emptyList()
-        XcodePartsProvider.InternalServer -> listOf(sdkDependency, toolchainDependency)
+        XcodePartsProvider.InternalServer -> listOf(sdkDependency, toolchainDependency, xcodeAddonDependency)
     }
 
     private val xcodePartsProvider = if (InternalServer.isAvailable) {
@@ -56,8 +62,10 @@ class AppleConfigurablesImpl(
         properties.getProperty("useFixedXcodeVersion")?.let { requiredXcodeVersion ->
             val currentXcodeVersion = xcode.version
 
-            if (currentXcodeVersion != requiredXcodeVersion) {
-                error("expected Xcode version $requiredXcodeVersion, got $currentXcodeVersion")
+            if (properties.getProperty("ignoreXcodeVersionCheck") != "true" &&
+                    currentXcodeVersion != requiredXcodeVersion) {
+                error("expected Xcode version $requiredXcodeVersion, got $currentXcodeVersion, consider updating " +
+                        "Xcode or use \"ignoreXcodeVersionCheck\" variable in konan.properties")
             }
         }
 

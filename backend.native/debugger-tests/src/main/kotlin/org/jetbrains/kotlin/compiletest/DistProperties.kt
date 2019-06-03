@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package org.jetbrains.kotlin.compiletest
 
 import org.jetbrains.kotlin.konan.target.Family
@@ -7,7 +12,7 @@ import java.nio.file.Paths
 
 
 object DistProperties {
-    private val dist: Path = Paths.get(requireProp("konan.home"))
+    private val dist: Path = Paths.get(requireProp("org.jetbrains.kotlin.native.home"))
     private val konancDriver = if (HostManager.host.family == Family.MINGW) "konanc.bat" else "konanc"
     val konanc: Path = dist.resolve("bin/$konancDriver")
     val lldb: Path = Paths.get("lldb")

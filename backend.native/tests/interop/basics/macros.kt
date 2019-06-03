@@ -1,5 +1,11 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import kotlin.test.*
 import cmacros.*
+import kotlinx.cinterop.*
 
 fun main(args: Array<String>) {
     assertEquals("foo", FOO_STRING)
@@ -16,4 +22,27 @@ fun main(args: Array<String>) {
 
     assertEquals(1.5f, onePointFive)
     assertEquals(1.0, onePointZero)
+
+    val nullPtr: COpaquePointer? = NULL_PTR
+    val voidPtr: COpaquePointer? = VOID_PTR
+    val intPtr: CPointer<IntVar>? = INT_PTR
+    val ptrSum: CPointer<IntVar>?  = PTR_SUM
+    val ptrCall: CPointer<IntVar>? = PTR_CALL
+
+    assertEquals(null, nullPtr)
+    assertEquals(1L, voidPtr.rawValue.toLong())
+    assertEquals(1L, intPtr.rawValue.toLong())
+    assertEquals(PTR_SUM_EXPECTED.toLong(), ptrSum.rawValue.toLong())
+    assertEquals(1L, ptrCall.rawValue.toLong())
+
+    assertEquals(42, INT_CALL)
+    assertEquals(84, CALL_SUM)
+    assertEquals(5, GLOBAL_VAR)
+
+    memScoped {
+        val counter = alloc<IntVar>()
+        counter.value = 42
+        increment(counter.ptr)
+        assertEquals(43, counter.value)
+    }
 }

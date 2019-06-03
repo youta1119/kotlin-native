@@ -23,6 +23,7 @@
 
 struct RuntimeState {
   MemoryState* memoryState;
+  volatile int executionStatus;
 };
 
 typedef void (*Initializer)(int initialize);
@@ -38,9 +39,28 @@ InitNode* initTailNode = nullptr;
 
 enum {
   INIT_GLOBALS = 0,
-  DEINIT_THREAD_LOCAL_GLOBALS = 1,
-  DEINIT_GLOBALS = 2
+  INIT_THREAD_LOCAL_GLOBALS = 1,
+  DEINIT_THREAD_LOCAL_GLOBALS = 2,
+  DEINIT_GLOBALS = 3
 };
+
+enum {
+  SUSPENDED = 0,
+  RUNNING,
+  DESTROYING
+};
+
+bool updateStatusIf(RuntimeState* state, int oldStatus, int newStatus) {
+#if KONAN_NO_THREADS
+    if (state->executionStatus == oldStatus) {
+        state->executionStatus = newStatus;
+        return true;
+    }
+    return false;
+#else
+    return __sync_bool_compare_and_swap(&state->executionStatus, oldStatus, newStatus);
+#endif
+}
 
 void InitOrDeinitGlobalVariables(int initialize) {
   InitNode *currNode = initHeadNode;
@@ -51,6 +71,7 @@ void InitOrDeinitGlobalVariables(int initialize) {
 }
 
 THREAD_LOCAL_VARIABLE RuntimeState* runtimeState = nullptr;
+THREAD_LOCAL_VARIABLE int isMainThread = 0;
 
 int aliveRuntimesCount = 0;
 
@@ -58,11 +79,17 @@ RuntimeState* initRuntime() {
   SetKonanTerminateHandler();
   RuntimeState* result = konanConstructInstance<RuntimeState>();
   if (!result) return nullptr;
+  RuntimeCheck(runtimeState == nullptr, "No active runtimes allowed");
+  runtimeState = result;
   result->memoryState = InitMemory();
+  bool firstRuntime = atomicAdd(&aliveRuntimesCount, 1) == 1;
   // Keep global variables in state as well.
-  InitOrDeinitGlobalVariables(INIT_GLOBALS);
-  konan::consoleInit();
-  atomicAdd(&aliveRuntimesCount, 1);
+  if (firstRuntime) {
+    isMainThread = 1;
+    konan::consoleInit();
+    InitOrDeinitGlobalVariables(INIT_GLOBALS);
+  }
+  InitOrDeinitGlobalVariables(INIT_THREAD_LOCAL_GLOBALS);
   return result;
 }
 
@@ -74,6 +101,7 @@ void deinitRuntime(RuntimeState* state) {
   DeinitMemory(state->memoryState);
   konanDestructInstance(state);
 }
+
 }  // namespace
 
 extern "C" {
@@ -90,7 +118,8 @@ void AppendToInitializersTail(InitNode *next) {
 
 void Kotlin_initRuntimeIfNeeded() {
   if (runtimeState == nullptr) {
-    runtimeState = initRuntime();
+    initRuntime();
+    RuntimeCheck(updateStatusIf(runtimeState, SUSPENDED, RUNNING), "Cannot transition state to RUNNING for init");
     // Register runtime deinit function at thread cleanup.
     konan::onThreadExit(Kotlin_deinitRuntimeIfNeeded);
   }
@@ -98,9 +127,101 @@ void Kotlin_initRuntimeIfNeeded() {
 
 void Kotlin_deinitRuntimeIfNeeded() {
   if (runtimeState != nullptr) {
+     RuntimeCheck(updateStatusIf(runtimeState, RUNNING, DESTROYING), "Cannot transition state to DESTROYING");
      deinitRuntime(runtimeState);
      runtimeState = nullptr;
   }
+}
+
+RuntimeState* Kotlin_createRuntime() {
+  return initRuntime();
+}
+
+void Kotlin_destroyRuntime(RuntimeState* state) {
+ RuntimeCheck(updateStatusIf(state, SUSPENDED, DESTROYING), "Cannot transition state to DESTROYING");
+ deinitRuntime(state);
+}
+
+RuntimeState* Kotlin_suspendRuntime() {
+    RuntimeCheck(::runtimeState != nullptr, "Runtime must be active on the current thread");
+    auto result = ::runtimeState;
+    RuntimeCheck(updateStatusIf(result, RUNNING, SUSPENDED), "Cannot transition state to SUSPENDED for suspend");
+    result->memoryState = SuspendMemory();
+    ::runtimeState = nullptr;
+    return result;
+}
+
+void Kotlin_resumeRuntime(RuntimeState* state) {
+    RuntimeCheck(::runtimeState == nullptr, "Runtime must not be active on the current thread");
+    RuntimeCheck(updateStatusIf(state, SUSPENDED, RUNNING), "Cannot transition state to RUNNING for resume");
+    ::runtimeState = state;
+    ResumeMemory(state->memoryState);
+}
+
+RuntimeState* RUNTIME_USED Kotlin_getRuntime() {
+  RuntimeCheck(::runtimeState != nullptr, "Runtime must be active on the current thread");
+  return ::runtimeState;
+}
+
+void CheckIsMainThread() {
+  if (!isMainThread)
+    ThrowIncorrectDereferenceException();
+}
+
+int Konan_Platform_canAccessUnaligned() {
+#if KONAN_NO_UNALIGNED_ACCESS
+  return 0;
+#else
+  return 1;
+#endif
+}
+
+int Konan_Platform_isLittleEndian() {
+#ifdef __BIG_ENDIAN__
+  return 0;
+#else
+  return 1;
+#endif
+}
+
+int Konan_Platform_getOsFamily() {
+#if KONAN_MACOSX
+  return 1;
+#elif KONAN_IOS
+  return 2;
+#elif KONAN_LINUX
+  return 3;
+#elif KONAN_WINDOWS
+  return 4;
+#elif KONAN_ANDROID
+  return 5;
+#elif KONAN_WASM
+  return 6;
+#else
+#warning "Unknown platform"
+  return 0;
+#endif
+}
+
+int Konan_Platform_getCpuArchitecture() {
+#if KONAN_ARM32
+  return 1;
+#elif KONAN_ARM64
+  return 2;
+#elif KONAN_X86
+  return 3;
+#elif KONAN_X64
+  return 4;
+#elif KONAN_MIPS32
+  return 5;
+#elif KONAN_MIPSEL32
+  return 6;
+#elif KONAN_WASM
+  return 7;
+#else
+#warning "Unknown CPU"
+  return 0;
+#endif
 }
 
 }  // extern "C"

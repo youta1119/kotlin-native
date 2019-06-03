@@ -35,6 +35,7 @@ class MappingBridgeGeneratorImpl(
             nativeBacked: NativeBacked,
             returnType: Type,
             kotlinValues: List<TypedKotlinValue>,
+            independent: Boolean,
             block: NativeCodeBuilder.(nativeValues: List<NativeExpression>) -> NativeExpression
     ): KotlinExpression {
         val bridgeArguments = mutableListOf<BridgeTypedKotlinValue>()
@@ -57,8 +58,9 @@ class MappingBridgeGeneratorImpl(
             is RecordType -> {
                 val mirror = mirror(declarationMapper, returnType)
                 val tmpVarName = kniRetVal
+                // We clear in the finally block.
                 builder.out("val $tmpVarName = nativeHeap.alloc<${mirror.pointedType.render(builder.scope)}>()")
-                builder.pushBlock("try {", free = "finally { nativeHeap.free($tmpVarName) }")
+                builder.pushBlock(start = "try {", end = "} finally { nativeHeap.free($tmpVarName) }")
                 bridgeArguments.add(BridgeTypedKotlinValue(BridgedType.NATIVE_PTR, "$tmpVarName.rawPtr"))
                 BridgedType.VOID
             }
@@ -69,7 +71,7 @@ class MappingBridgeGeneratorImpl(
         }
 
         val callExpr = simpleBridgeGenerator.kotlinToNative(
-                nativeBacked, bridgeReturnType, bridgeArguments
+                nativeBacked, bridgeReturnType, bridgeArguments, independent
         ) { bridgeNativeValues ->
 
             val nativeValues = mutableListOf<String>()
@@ -94,7 +96,10 @@ class MappingBridgeGeneratorImpl(
                     ""
                 }
                 is RecordType -> {
-                    out("*(${unwrappedReturnType.decl.spelling}*)${bridgeNativeValues.last()} = $nativeResult;")
+                    val kniStructResult = "kniStructResult"
+
+                    out("${unwrappedReturnType.decl.spelling} $kniStructResult = $nativeResult;")
+                    out("memcpy(${bridgeNativeValues.last()}, &$kniStructResult, sizeof($kniStructResult));")
                     ""
                 }
                 else -> {

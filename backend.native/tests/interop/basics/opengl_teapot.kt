@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import kotlinx.cinterop.*
 import platform.GLUT.*
 import platform.OpenGL.*
@@ -13,7 +18,7 @@ private val windowHeight = 480
 
 fun display() {
     // Clear Screen and Depth Buffer
-    glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
+    glClear((GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT).convert())
     glLoadIdentity()
 
     // Define a viewing transformation
@@ -90,7 +95,7 @@ fun main(args: Array<String>) {
     }
 
     // Display Mode
-    glutInitDisplayMode(GLUT_RGB or GLUT_DOUBLE or GLUT_DEPTH)
+    glutInitDisplayMode((GLUT_RGB or GLUT_DOUBLE or GLUT_DEPTH).convert())
 
     // Set window size
     glutInitWindowSize(windowWidth, windowHeight)

@@ -1,46 +1,39 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan.library.impl
 
-import org.jetbrains.kotlin.backend.konan.library.KonanLibraryReader
 import llvm.LLVMModuleRef
 import llvm.LLVMWriteBitcodeToFile
-import org.jetbrains.kotlin.backend.konan.library.KonanLibrary
 import org.jetbrains.kotlin.backend.konan.library.KonanLibraryWriter
 import org.jetbrains.kotlin.backend.konan.library.LinkData
 import org.jetbrains.kotlin.konan.file.*
+import org.jetbrains.kotlin.konan.library.*
+import org.jetbrains.kotlin.konan.library.KLIB_FILE_EXTENSION
 import org.jetbrains.kotlin.konan.properties.*
 import org.jetbrains.kotlin.konan.target.KonanTarget
 
-abstract class FileBasedLibraryWriter (
-    val file: File, val currentAbiVersion: Int): KonanLibraryWriter {
-}
+abstract class FileBasedLibraryWriter (val file: File): KonanLibraryWriter
 
-class LibraryWriterImpl(override val libDir: File, moduleName: String, currentAbiVersion: Int, 
-    override val target: KonanTarget?, val nopack: Boolean = false): 
-        FileBasedLibraryWriter(libDir, currentAbiVersion), KonanLibrary {
+/**
+ * Requires non-null [target].
+ */
+class LibraryWriterImpl(
+        override val libDir: File,
+        moduleName: String,
+        override val versions: KonanLibraryVersioning,
+        override val target: KonanTarget,
+        val nopack: Boolean = false
+): FileBasedLibraryWriter(libDir), KonanLibraryLayout {
 
-    public constructor(path: String, moduleName: String, currentAbiVersion: Int, 
-        target:KonanTarget?, nopack: Boolean): 
-        this(File(path), moduleName, currentAbiVersion, target, nopack)
+    constructor(path: String, moduleName: String, versions: KonanLibraryVersioning, target: KonanTarget, nopack: Boolean):
+        this(File(path), moduleName, versions, target, nopack)
 
     override val libraryName = libDir.path
     val klibFile 
-       get() = File("${libDir.path}.klib")
+       get() = File("${libDir.path}.$KLIB_FILE_EXTENSION")
 
     // TODO: Experiment with separate bitcode files.
     // Per package or per class.
@@ -59,9 +52,10 @@ class LibraryWriterImpl(override val libDir: File, moduleName: String, currentAb
         nativeDir.mkdirs()
         includedDir.mkdirs()
         resourcesDir.mkdirs()
+        irDir.mkdirs()
         // TODO: <name>:<hash> will go somewhere around here.
-        manifestProperties.setProperty("unique_name", "$moduleName")
-        manifestProperties.setProperty("abi_version", "$currentAbiVersion")
+        manifestProperties.setProperty(KLIB_PROPERTY_UNIQUE_NAME, moduleName)
+        manifestProperties.writeKonanLibraryVersioning(versions)
     }
 
     var llvmModule: LLVMModuleRef? = null
@@ -85,19 +79,23 @@ class LibraryWriterImpl(override val libDir: File, moduleName: String, currentAb
         File(library).copyTo(File(includedDir, basename)) 
     }
 
-    override fun addLinkDependencies(libraries: List<KonanLibraryReader>) {
+    override fun addLinkDependencies(libraries: List<KonanLibrary>) {
         if (libraries.isEmpty()) {
-            manifestProperties.remove("depends") 
+            manifestProperties.remove(KLIB_PROPERTY_DEPENDS)
             // make sure there are no leftovers from the .def file.
             return
         } else {
-            val newValue = libraries .map { it.uniqueName } . joinToString(" ")
-            manifestProperties.setProperty("depends", newValue)
+            val newValue = libraries.joinToString(" ") { it.uniqueName }
+            manifestProperties.setProperty(KLIB_PROPERTY_DEPENDS, newValue)
+            libraries.forEach { it ->
+                if (it.versions.libraryVersion != null) {
+                    manifestProperties.setProperty("${KLIB_PROPERTY_DEPENDENCY_VERSION}_${it.uniqueName}", it.versions.libraryVersion)
+                }
+            }
         }
     }
 
-    override fun addManifestAddend(path: String) {
-        val properties = File(path).loadProperties()
+    override fun addManifestAddend(properties: Properties) {
         manifestProperties.putAll(properties)
     }
 
@@ -115,22 +113,22 @@ class LibraryWriterImpl(override val libDir: File, moduleName: String, currentAb
 }
 
 internal fun buildLibrary(
-    natives: List<String>, 
-    included: List<String>,
-    linkDependencies: List<KonanLibraryReader>,
-    linkData: LinkData, 
-    abiVersion: Int, 
-    target: KonanTarget, 
-    output: String, 
-    moduleName: String, 
-    llvmModule: LLVMModuleRef, 
-    nopack: Boolean, 
-    manifest: String?,
-    dataFlowGraph: ByteArray?): KonanLibraryWriter {
+        natives: List<String>,
+        included: List<String>,
+        linkDependencies: List<KonanLibrary>,
+        linkData: LinkData,
+        versions: KonanLibraryVersioning,
+        target: KonanTarget,
+        output: String,
+        moduleName: String,
+        llvmModule: LLVMModuleRef?,
+        nopack: Boolean,
+        manifestProperties: Properties?,
+        dataFlowGraph: ByteArray?): KonanLibraryWriter {
 
-    val library = LibraryWriterImpl(output, moduleName, abiVersion, target, nopack)
+    val library = LibraryWriterImpl(File(output), moduleName, versions, target, nopack)
 
-    library.addKotlinBitcode(llvmModule)
+    llvmModule?.let { library.addKotlinBitcode(it) }
     library.addLinkData(linkData)
     natives.forEach {
         library.addNativeBitcode(it)
@@ -138,7 +136,7 @@ internal fun buildLibrary(
     included.forEach {
         library.addIncludedBinary(it)
     }
-    manifest ?.let { library.addManifestAddend(it) }
+    manifestProperties?.let { library.addManifestAddend(it) }
     library.addLinkDependencies(linkDependencies)
     dataFlowGraph?.let { library.addDataFlowGraph(it) }
 

@@ -13,12 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Assert.h"
+#include "KAssert.h"
 #include "Memory.h"
 #include "Natives.h"
 #include "KString.h"
 #include "Porting.h"
 #include "Types.h"
+#include "Exceptions.h"
 
 #include "utf8.h"
 
@@ -26,7 +27,9 @@ extern "C" {
 
 // io/Console.kt
 void Kotlin_io_Console_print(KString message) {
-  RuntimeAssert(message->type_info() == theStringTypeInfo, "Must use a string");
+  if (message->type_info() != theStringTypeInfo) {
+    ThrowClassCastException(message->obj(), theStringTypeInfo);
+  }
   // TODO: system stdout must be aware about UTF-8.
   const KChar* utf16 = CharArrayAddressOfElementAt(message, 0);
   KStdString utf8;

@@ -1,83 +1,51 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan
 
-import org.jetbrains.kotlin.backend.konan.descriptors.ClassifierAliasingPackageFragmentDescriptor
-import org.jetbrains.kotlin.backend.konan.descriptors.ExportedForwardDeclarationsPackageFragmentDescriptor
-import org.jetbrains.kotlin.backend.konan.library.KonanLibraryReader
-import org.jetbrains.kotlin.backend.konan.serialization.KonanPackageFragment
+import org.jetbrains.kotlin.builtins.UnsignedType
+import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
 import org.jetbrains.kotlin.descriptors.ClassDescriptor
-import org.jetbrains.kotlin.descriptors.ModuleDescriptor
-import org.jetbrains.kotlin.descriptors.PackageFragmentDescriptor
-import org.jetbrains.kotlin.descriptors.PropertyDescriptor
+import org.jetbrains.kotlin.descriptors.findClassAcrossModuleDependencies
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.scopes.MemberScope
 import org.jetbrains.kotlin.types.TypeUtils
-import org.jetbrains.kotlin.util.OperatorNameConventions
 
-interface InteropLibrary {
-    fun createSyntheticPackages(
-            module: ModuleDescriptor,
-            konanPackageFragments: List<KonanPackageFragment>
-    ): List<PackageFragmentDescriptor>
+object InteropFqNames {
+
+    const val cPointerName = "CPointer"
+    const val nativePointedName = "NativePointed"
+
+    val packageName = FqName("kotlinx.cinterop")
+
+    val cPointer = packageName.child(Name.identifier(cPointerName)).toUnsafe()
+    val nativePointed = packageName.child(Name.identifier(nativePointedName)).toUnsafe()
 }
-
-fun createInteropLibrary(reader: KonanLibraryReader): InteropLibrary? {
-    if (reader.manifestProperties.getProperty("interop") != "true") return null
-    val pkg = reader.manifestProperties.getProperty("package") 
-        ?: error("Inconsistent manifest: interop library ${reader.libraryName} should have `package` specified")
-    val exportForwardDeclarations = reader.manifestProperties
-            .getProperty("exportForwardDeclarations").split(' ')
-            .map { it.trim() }.filter { it.isNotEmpty() }
-            .map { FqName(it) }
-
-    return InteropLibraryImpl(FqName(pkg), exportForwardDeclarations)
-}
-
-private val cPointerName = "CPointer"
-private val nativePointedName = "NativePointed"
 
 internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
 
-    object FqNames {
-        val packageName = FqName("kotlinx.cinterop")
+    val packageScope = builtIns.builtInsModule.getPackage(InteropFqNames.packageName).memberScope
 
-        val cPointer = packageName.child(Name.identifier(cPointerName)).toUnsafe()
-        val nativePointed = packageName.child(Name.identifier(nativePointedName)).toUnsafe()
+    val nativePointed = packageScope.getContributedClass(InteropFqNames.nativePointedName)
 
-        val cNames = FqName("cnames")
-        val cNamesStructs = cNames.child(Name.identifier("structs"))
+    val cValuesRef = this.packageScope.getContributedClass("CValuesRef")
+    val cValues = this.packageScope.getContributedClass("CValues")
+    val cValue = this.packageScope.getContributedClass("CValue")
+    val cOpaque = this.packageScope.getContributedClass("COpaque")
+    val cValueWrite = this.packageScope.getContributedFunctions("write")
+            .single { it.extensionReceiverParameter?.type?.constructor?.declarationDescriptor == cValue }
+    val cValueRead = this.packageScope.getContributedFunctions("readValue")
+            .single { it.valueParameters.size == 1 }
 
-        val objCNames = FqName("objcnames")
-        val objCNamesClasses = objCNames.child(Name.identifier("classes"))
-        val objCNamesProtocols = objCNames.child(Name.identifier("protocols"))
-    }
+    val allocType = this.packageScope.getContributedFunctions("alloc")
+            .single { it.extensionReceiverParameter != null
+                    && it.valueParameters.singleOrNull()?.name?.toString() == "type" }
 
-    val packageScope = builtIns.builtInsModule.getPackage(FqNames.packageName).memberScope
-
-    val getPointerSize = packageScope.getContributedFunctions("getPointerSize").single()
-
-    val nullableInteropValueTypes = listOf(ValueType.C_POINTER, ValueType.NATIVE_POINTED)
-
-    private val nativePointed = packageScope.getContributedClass(nativePointedName)
-
-    val cPointer = this.packageScope.getContributedClass(cPointerName)
+    val cPointer = this.packageScope.getContributedClass(InteropFqNames.cPointerName)
 
     val cPointerRawValue = cPointer.unsubstitutedMemberScope.getContributedVariables("rawValue").single()
 
@@ -86,6 +54,10 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
         extensionReceiverParameter != null &&
                 TypeUtils.getClassDescriptor(extensionReceiverParameter.type) == cPointer
     }
+
+    val cstr = packageScope.getContributedVariables("cstr").single()
+    val wcstr = packageScope.getContributedVariables("wcstr").single()
+    val memScope = packageScope.getContributedClass("MemScope")
 
     val nativePointedRawPtrGetter =
             nativePointed.unsubstitutedMemberScope.getContributedVariables("rawPtr").single().getter!!
@@ -96,69 +68,14 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
                 TypeUtils.getClassDescriptor(extensionReceiverParameter.type) == nativePointed
     }
 
-    val interpretNullablePointed = packageScope.getContributedFunctions("interpretNullablePointed").single()
-
-    val interpretCPointer = packageScope.getContributedFunctions("interpretCPointer").single()
-
     val typeOf = packageScope.getContributedFunctions("typeOf").single()
 
-    val nativeMemUtils = packageScope.getContributedClass("nativeMemUtils")
+    val concurrentPackageScope = builtIns.builtInsModule.getPackage(FqName("kotlin.native.concurrent")).memberScope
 
-    private val primitives = listOf(
-            builtIns.byte, builtIns.short, builtIns.int, builtIns.long,
-            builtIns.float, builtIns.double,
-            builtIns.nativePtr
-    )
+    val executeImplFunction = concurrentPackageScope.getContributedFunctions("executeImpl").single()
 
-    val readPrimitive = primitives.map {
-        nativeMemUtils.unsubstitutedMemberScope.getContributedFunctions("get" + it.name).single()
-    }.toSet()
-
-    val writePrimitive = primitives.map {
-        nativeMemUtils.unsubstitutedMemberScope.getContributedFunctions("put" + it.name).single()
-    }.toSet()
-
-    val bitsToFloat = packageScope.getContributedFunctions("bitsToFloat").single()
-
-    val bitsToDouble = packageScope.getContributedFunctions("bitsToDouble").single()
-
-    val staticCFunction = packageScope.getContributedFunctions("staticCFunction").toSet()
-
-    val workerPackageScope = builtIns.builtInsModule.getPackage(FqName("konan.worker")).memberScope
-
-    val scheduleFunction = workerPackageScope.getContributedClass("Worker")
-            .unsubstitutedMemberScope.getContributedFunctions("schedule").single()
-
-    val scheduleImplFunction = workerPackageScope.getContributedFunctions("scheduleImpl").single()
-
-    val signExtend = packageScope.getContributedFunctions("signExtend").single()
-
-    val narrow = packageScope.getContributedFunctions("narrow").single()
-
-    val readBits = packageScope.getContributedFunctions("readBits").single()
-    val writeBits = packageScope.getContributedFunctions("writeBits").single()
-
-    val cFunctionPointerInvokes = packageScope.getContributedFunctions(OperatorNameConventions.INVOKE.asString())
-            .filter {
-                val extensionReceiverParameter = it.extensionReceiverParameter
-                it.isOperator &&
-                        extensionReceiverParameter != null &&
-                        TypeUtils.getClassDescriptor(extensionReceiverParameter.type) == cPointer
-            }.toSet()
-
-    val invokeImpls = mapOf(
-            builtIns.unit to "invokeImplUnitRet",
-            builtIns.boolean to "invokeImplBooleanRet",
-            builtIns.byte to "invokeImplByteRet",
-            builtIns.short to "invokeImplShortRet",
-            builtIns.int to "invokeImplIntRet",
-            builtIns.long to "invokeImplLongRet",
-            builtIns.float to "invokeImplFloatRet",
-            builtIns.double to "invokeImplDoubleRet",
-            cPointer to "invokeImplPointerRet"
-    ).mapValues { (_, name) ->
-        packageScope.getContributedFunctions(name).single()
-    }.toMap()
+    private fun KonanBuiltIns.getUnsignedClass(unsignedType: UnsignedType): ClassDescriptor =
+            this.builtInsModule.findClassAcrossModuleDependencies(unsignedType.classId)!!
 
     val objCObject = packageScope.getContributedClass("ObjCObject")
 
@@ -169,11 +86,6 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
     val getObjCClass = packageScope.getContributedFunctions("getObjCClass").single()
 
     val objCObjectRawPtr = packageScope.getContributedFunctions("objcPtr").single()
-
-    val getObjCReceiverOrSuper = packageScope.getContributedFunctions("getReceiverOrSuper").single()
-
-    val getObjCMessenger = packageScope.getContributedFunctions("getMessenger").single()
-    val getObjCMessengerLU = packageScope.getContributedFunctions("getMessengerLU").single()
 
     val interpretObjCPointerOrNull = packageScope.getContributedFunctions("interpretObjCPointerOrNull").single()
     val interpretObjCPointer = packageScope.getContributedFunctions("interpretObjCPointer").single()
@@ -203,31 +115,3 @@ private fun MemberScope.getContributedClass(name: String): ClassDescriptor =
 
 private fun MemberScope.getContributedFunctions(name: String) =
         this.getContributedFunctions(Name.identifier(name), NoLookupLocation.FROM_BUILTINS)
-
-private class InteropLibraryImpl(
-        private val packageFqName: FqName,
-        private val exportForwardDeclarations: List<FqName>
-) : InteropLibrary {
-    override fun createSyntheticPackages(
-            module: ModuleDescriptor,
-            konanPackageFragments: List<KonanPackageFragment>
-    ): List<PackageFragmentDescriptor> {
-        val interopPackageFragments = konanPackageFragments.filter { it.fqName == packageFqName }
-
-        val fqNames = InteropBuiltIns.FqNames
-
-        val result = mutableListOf<PackageFragmentDescriptor>()
-
-        // Allow references to forwarding declarations to be resolved into classifiers declared in this library:
-        listOf(fqNames.cNamesStructs, fqNames.objCNamesClasses, fqNames.objCNamesProtocols).mapTo(result) { fqName ->
-            ClassifierAliasingPackageFragmentDescriptor(interopPackageFragments, module, fqName)
-        }
-        // TODO: use separate namespaces for structs, enums, Objective-C protocols etc.
-
-        result.add(ExportedForwardDeclarationsPackageFragmentDescriptor(
-                module, packageFqName, exportForwardDeclarations
-        ))
-
-        return result
-    }
-}

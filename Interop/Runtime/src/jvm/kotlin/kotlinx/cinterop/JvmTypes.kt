@@ -20,7 +20,11 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.full.companionObjectInstance
 
 typealias NativePtr = Long
-val nativeNullPtr: NativePtr = 0L
+internal typealias NonNullNativePtr = NativePtr
+@PublishedApi internal fun NonNullNativePtr.toNativePtr() = this
+internal fun NativePtr.toNonNull(): NonNullNativePtr = this
+
+public val nativeNullPtr: NativePtr = 0L
 
 // TODO: the functions below should eventually be intrinsified
 
@@ -46,6 +50,11 @@ inline fun <reified T : NativePointed> interpretNullablePointed(ptr: NativePtr):
     }
 }
 
+/**
+ * Creates a [CPointer] from the raw pointer of [NativePtr].
+ *
+ * @return a [CPointer] representation, or `null` if the [rawValue] represents native `nullptr`.
+ */
 fun <T : CPointed> interpretCPointer(rawValue: NativePtr) =
         if (rawValue == nativeNullPtr) {
             null

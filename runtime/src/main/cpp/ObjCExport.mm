@@ -76,6 +76,7 @@ struct ObjCTypeAdapter {
 };
 
 typedef id (*convertReferenceToObjC)(ObjHeader* obj);
+typedef OBJ_GETTER((*convertReferenceFromObjC), id obj);
 
 struct TypeInfoObjCExportAddition {
   /*convertReferenceToObjC*/ void* convert;
@@ -108,24 +109,25 @@ inline static OBJ_GETTER(AllocInstanceWithAssociatedObject, const TypeInfo* type
   return result;
 }
 
+extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
+                            const TypeInfo* typeInfo, id associatedObject) RUNTIME_NOTHROW;
+
+extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
+                            const TypeInfo* typeInfo, id associatedObject) {
+  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, associatedObject);
+}
+
 static Class getOrCreateClass(const TypeInfo* typeInfo);
 static void initializeClass(Class clazz);
 extern "C" ALWAYS_INLINE void Kotlin_ObjCExport_releaseAssociatedObject(void* associatedObject);
 
-static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) {
-  if (!obj->container()->permanentOrFrozen()) {
-    SetAssociatedObject(obj, associatedObject);
-    return associatedObject;
-  } else {
-    void* old = __sync_val_compare_and_swap(&obj->meta_object()->associatedObject_, nullptr, (void*)associatedObject);
-    if (old == nullptr) {
-      return associatedObject;
-    } else {
-      Kotlin_ObjCExport_releaseAssociatedObject((void*)associatedObject);
-      return (id)old;
-    }
-  }
+static inline id AtomicCompareAndSwapAssociatedObject(ObjHeader* obj, id expectedValue, id newValue) {
+  id* location = reinterpret_cast<id*>(&obj->meta_object()->associatedObject_);
+  return __sync_val_compare_and_swap(location, expectedValue, newValue);
 }
+
+extern "C" id objc_retainAutoreleaseReturnValue(id self);
+extern "C" id objc_autoreleaseReturnValue(id self);
 
 @interface NSObject (NSObjectPrivateMethods)
 // Implemented for NSObject in libobjc/NSObject.mm
@@ -135,15 +137,20 @@ static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) 
 @interface KotlinBase : NSObject <ConvertibleToKotlin, NSCopying>
 @end;
 
+static void initializeObjCExport();
+
 @implementation KotlinBase {
-  KRef kotlinObj;
+  KRefSharedHolder refHolder;
 }
 
 -(KRef)toKotlin:(KRef*)OBJ_RESULT {
-  RETURN_OBJ(kotlinObj);
+  RETURN_OBJ(refHolder.ref());
 }
 
 +(void)initialize {
+  if (self == [KotlinBase class]) {
+    initializeObjCExport();
+  }
   initializeClass(self);
 }
 
@@ -164,28 +171,35 @@ static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) 
           format:@"%s must be allocated and initialized with a factory method",
           class_getName(object_getClass(self))];
   }
-
-  AllocInstanceWithAssociatedObject(typeInfo, result, &result->kotlinObj);
-
+  ObjHolder holder;
+  AllocInstanceWithAssociatedObject(typeInfo, result, holder.slot());
+  UpdateHeapRef(result->refHolder.slotToInit(), holder.obj());
   return result;
 }
 
 +(instancetype)createWrapper:(ObjHeader*)obj {
-  KotlinBase* result = [super allocWithZone:nil];
+  KotlinBase* candidate = [super allocWithZone:nil];
   // TODO: should we call NSObject.init ?
-  UpdateRef(&result->kotlinObj, obj);
-  [result autorelease];
+  candidate->refHolder.init(obj);
 
-  if (!obj->permanent()) {
-    return AtomicSetAssociatedObject(obj, result);
-  } else {
-    // TODO: permanent objects should probably be supported as custom types.
-    return result;
+  if (!obj->permanent()) { // TODO: permanent objects should probably be supported as custom types.
+    if (!obj->container()->shareable()) {
+      SetAssociatedObject(obj, candidate);
+    } else {
+      id old = AtomicCompareAndSwapAssociatedObject(obj, nullptr, candidate);
+      if (old != nullptr) {
+        candidate->refHolder.dispose();
+        [candidate releaseAsAssociatedObject];
+        return objc_retainAutoreleaseReturnValue(old);
+      }
+    }
   }
+
+  return objc_autoreleaseReturnValue(candidate);
 }
 
 -(instancetype)retain {
-  ObjHeader* obj = kotlinObj;
+  ObjHeader* obj = refHolder.ref();
   if (obj->permanent()) { // TODO: consider storing `isPermanent` to self field.
     [super retain];
   } else {
@@ -195,7 +209,7 @@ static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) 
 }
 
 -(BOOL)_tryRetain {
-  ObjHeader* obj = kotlinObj;
+  ObjHeader* obj = refHolder.ref();
   if (obj->permanent()) {
     return [super _tryRetain];
   } else if (!obj->has_meta_object()) {
@@ -209,16 +223,15 @@ static inline id AtomicSetAssociatedObject(ObjHeader* obj, id associatedObject) 
 }
 
 -(oneway void)release {
-  ObjHeader* obj = kotlinObj;
+  ObjHeader* obj = refHolder.ref();
   if (obj->permanent()) {
     [super release];
   } else {
-    ReleaseRefFromAssociatedObject(kotlinObj);
+    ReleaseRefFromAssociatedObject(obj);
   }
 }
 
 -(void)releaseAsAssociatedObject {
-  RuntimeAssert(!kotlinObj->permanent(), "");
   [super release];
 }
 
@@ -245,9 +258,6 @@ extern "C" id Kotlin_ObjCExport_convertUnit(ObjHeader* unitInstance) {
   return instance;
 }
 
-extern "C" id objc_retainBlock(id self);
-extern "C" id objc_retainAutoreleaseReturnValue(id self);
-
 extern "C" id Kotlin_ObjCExport_CreateNSStringFromKString(ObjHeader* str) {
   KChar* utf16Chars = CharArrayAddressOfElementAt(str->array(), 0);
   auto numBytes = str->array()->count_ * sizeof(KChar);
@@ -259,11 +269,21 @@ extern "C" id Kotlin_ObjCExport_CreateNSStringFromKString(ObjHeader* str) {
         freeWhenDone:NO] autorelease];
   } else {
     // TODO: consider making NSString subclass to avoid copying here.
-    NSString* result = [[NSString alloc] initWithBytes:utf16Chars
+    NSString* candidate = [[NSString alloc] initWithBytes:utf16Chars
       length:numBytes
       encoding:NSUTF16LittleEndianStringEncoding];
 
-    return objc_retainAutoreleaseReturnValue(AtomicSetAssociatedObject(str, result));
+    if (!str->container()->shareable()) {
+      SetAssociatedObject(str, candidate);
+    } else {
+      id old = AtomicCompareAndSwapAssociatedObject(str, nullptr, candidate);
+      if (old != nullptr) {
+        objc_release(candidate);
+        return objc_retainAutoreleaseReturnValue(old);
+      }
+    }
+
+    return objc_retainAutoreleaseReturnValue(candidate);
   }
 }
 static const ObjCTypeAdapter* findAdapterByName(
@@ -313,18 +333,37 @@ static const ObjCTypeAdapter* getTypeAdapter(const TypeInfo* typeInfo) {
   return typeInfo->writableInfo_->objCExport.typeAdapter;
 }
 
-static Protocol* getProtocolForInterface(const TypeInfo* interfaceInfo) {
+static void addProtocolForAdapter(Class clazz, const ObjCTypeAdapter* protocolAdapter) {
+  Protocol* protocol = objc_getProtocol(protocolAdapter->objCName);
+  if (protocol != nullptr) {
+    class_addProtocol(clazz, protocol);
+    class_addProtocol(object_getClass(clazz), protocol);
+  } else {
+    // TODO: construct the protocol in compiler instead, because this case can't be handled easily.
+  }
+}
+
+static void addProtocolForInterface(Class clazz, const TypeInfo* interfaceInfo) {
   const ObjCTypeAdapter* protocolAdapter = getTypeAdapter(interfaceInfo);
   if (protocolAdapter != nullptr) {
-    Protocol* protocol = objc_getProtocol(protocolAdapter->objCName);
-    if (protocol != nullptr) {
-      return protocol;
-    } else {
-      // TODO: construct the protocol in compiler instead, because this case can't be handled easily.
-    }
+    addProtocolForAdapter(clazz, protocolAdapter);
   }
+}
 
-  return nullptr;
+extern "C" const TypeInfo* Kotlin_ObjCInterop_getTypeInfoForClass(Class clazz) {
+  const TypeInfo* candidate = getAssociatedTypeInfo(clazz);
+
+  if (candidate != nullptr && (candidate->flags_ & TF_OBJC_DYNAMIC) == 0) {
+    return candidate;
+  } else {
+    return nullptr;
+  }
+}
+
+extern "C" const TypeInfo* Kotlin_ObjCInterop_getTypeInfoForProtocol(Protocol* protocol) {
+  const ObjCTypeAdapter* typeAdapter = findProtocolAdapter(protocol);
+
+  return (typeAdapter != nullptr) ? typeAdapter->kotlinTypeInfo : nullptr;
 }
 
 static const TypeInfo* getOrCreateTypeInfo(Class clazz);
@@ -359,11 +398,7 @@ static void initializeClass(Class clazz) {
   if (isClassForPackage) return;
 
   for (int i = 0; i < typeInfo->implementedInterfacesCount_; ++i) {
-    Protocol* protocol = getProtocolForInterface(typeInfo->implementedInterfaces_[i]);
-    if (protocol != nullptr) {
-      class_addProtocol(clazz, protocol);
-      class_addProtocol(object_getClass(clazz), protocol);
-    }
+    addProtocolForInterface(clazz, typeInfo->implementedInterfaces_[i]);
   }
 
 }
@@ -371,6 +406,54 @@ static void initializeClass(Class clazz) {
 static ALWAYS_INLINE OBJ_GETTER(convertUnmappedObjCObject, id obj) {
   const TypeInfo* typeInfo = getOrCreateTypeInfo(object_getClass(obj));
   RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, objc_retain(obj));
+}
+
+static OBJ_GETTER(blockToKotlinImp, id self, SEL cmd);
+static OBJ_GETTER(boxedBooleanToKotlinImp, NSNumber* self, SEL cmd);
+
+static OBJ_GETTER(SwiftObject_toKotlinImp, id self, SEL cmd);
+static void SwiftObject_releaseAsAssociatedObjectImp(id self, SEL cmd);
+
+static void checkLoadedOnce();
+
+static void initializeObjCExport() {
+  SEL toKotlinSelector = @selector(toKotlin:);
+  Method toKotlinMethod = class_getClassMethod([NSObject class], toKotlinSelector);
+  RuntimeAssert(toKotlinMethod != nullptr, "");
+  const char* toKotlinTypeEncoding = method_getTypeEncoding(toKotlinMethod);
+
+  SEL releaseAsAssociatedObjectSelector = @selector(releaseAsAssociatedObject);
+  Method releaseAsAssociatedObjectMethod = class_getClassMethod([NSObject class], releaseAsAssociatedObjectSelector);
+  RuntimeAssert(releaseAsAssociatedObjectMethod != nullptr, "");
+  const char* releaseAsAssociatedObjectTypeEncoding = method_getTypeEncoding(releaseAsAssociatedObjectMethod);
+
+  Class nsBlockClass = objc_getClass("NSBlock");
+  RuntimeAssert(nsBlockClass != nullptr, "NSBlock class not found");
+
+  // Note: can't add it with category, because it would be considered as private API usage.
+  BOOL added = class_addMethod(nsBlockClass, toKotlinSelector, (IMP)blockToKotlinImp, toKotlinTypeEncoding);
+  RuntimeAssert(added, "Unable to add 'toKotlin:' method to NSBlock class");
+
+  // Note: __NSCFBoolean is not visible to linker, so this case can't be handled with a category too.
+  Class booleanClass = objc_getClass("__NSCFBoolean");
+  RuntimeAssert(booleanClass != nullptr, "__NSCFBoolean class not found");
+
+  added = class_addMethod(booleanClass, toKotlinSelector, (IMP)boxedBooleanToKotlinImp, toKotlinTypeEncoding);
+  RuntimeAssert(added, "Unable to add 'toKotlin:' method to __NSCFBoolean class");
+
+  for (const char* swiftRootClassName : { "SwiftObject", "_TtCs12_SwiftObject" }) {
+    Class swiftRootClass = objc_getClass(swiftRootClassName);
+    if (swiftRootClass != nullptr) {
+      added = class_addMethod(swiftRootClass, toKotlinSelector, (IMP)SwiftObject_toKotlinImp, toKotlinTypeEncoding);
+      RuntimeAssert(added, "Unable to add 'toKotlin:' method to SwiftObject class");
+
+      added = class_addMethod(
+        swiftRootClass, releaseAsAssociatedObjectSelector,
+        (IMP)SwiftObject_releaseAsAssociatedObjectImp, releaseAsAssociatedObjectTypeEncoding
+      );
+      RuntimeAssert(added, "Unable to add 'releaseAsAssociatedObject' method to SwiftObject class");
+    }
+  }
 }
 
 @interface NSObject (NSObjectToKotlin) <ConvertibleToKotlin>
@@ -384,7 +467,22 @@ static ALWAYS_INLINE OBJ_GETTER(convertUnmappedObjCObject, id obj) {
 -(void)releaseAsAssociatedObject {
   objc_release(self);
 }
+
++(void)load {
+  static dispatch_once_t onceToken = 0;
+  dispatch_once(&onceToken, ^{
+    checkLoadedOnce();
+  });
+}
 @end;
+
+static OBJ_GETTER(SwiftObject_toKotlinImp, id self, SEL cmd) {
+  RETURN_RESULT_OF(convertUnmappedObjCObject, self);
+}
+
+static void SwiftObject_releaseAsAssociatedObjectImp(id self, SEL cmd) {
+  objc_release(self);
+}
 
 @interface NSString (NSStringToKotlin) <ConvertibleToKotlin>
 @end;
@@ -398,20 +496,25 @@ static ALWAYS_INLINE OBJ_GETTER(convertUnmappedObjCObject, id obj) {
 extern "C" {
 
 OBJ_GETTER(Kotlin_boxBoolean, KBoolean value);
-OBJ_GETTER(Kotlin_boxChar, KChar value);
 OBJ_GETTER(Kotlin_boxByte, KByte value);
 OBJ_GETTER(Kotlin_boxShort, KShort value);
 OBJ_GETTER(Kotlin_boxInt, KInt value);
 OBJ_GETTER(Kotlin_boxLong, KLong value);
+OBJ_GETTER(Kotlin_boxUByte, KUByte value);
+OBJ_GETTER(Kotlin_boxUShort, KUShort value);
+OBJ_GETTER(Kotlin_boxUInt, KUInt value);
+OBJ_GETTER(Kotlin_boxULong, KULong value);
 OBJ_GETTER(Kotlin_boxFloat, KFloat value);
 OBJ_GETTER(Kotlin_boxDouble, KDouble value);
 
 }
 
+static OBJ_GETTER(boxedBooleanToKotlinImp, NSNumber* self, SEL cmd) {
+  RETURN_RESULT_OF(Kotlin_boxBoolean, self.boolValue);
+}
+
 @interface NSNumber (NSNumberToKotlin) <ConvertibleToKotlin>
 @end;
-
-static Class __NSCFBooleanClass = nullptr;
 
 @implementation NSNumber (NSNumberToKotlin)
 -(ObjHeader*)toKotlin:(ObjHeader**)OBJ_RESULT {
@@ -420,26 +523,14 @@ static Class __NSCFBooleanClass = nullptr;
   // TODO: the code below makes some assumption on char, short, int and long sizes.
 
   switch (type[0]) {
-    case 'S': RETURN_RESULT_OF(Kotlin_boxChar, self.unsignedShortValue);
-    case 'c': {
-      Class booleanClass = __NSCFBooleanClass;
-      if (booleanClass == nullptr) {
-        // Note: __NSCFBoolean is not visible to linker, so this case can't be handled with a category.
-        booleanClass = __NSCFBooleanClass = objc_getClass("__NSCFBoolean");
-        if (booleanClass == nullptr) {
-          [NSException raise:NSGenericException format:@"__NSCFBoolean class not found"];
-        }
-      }
-
-      if (object_getClass(self) == booleanClass) {
-        RETURN_RESULT_OF(Kotlin_boxBoolean, self.boolValue);
-      } else {
-        RETURN_RESULT_OF(Kotlin_boxByte, self.charValue);
-      }
-    }
+    case 'c': RETURN_RESULT_OF(Kotlin_boxByte, self.charValue);
     case 's': RETURN_RESULT_OF(Kotlin_boxShort, self.shortValue);
     case 'i': RETURN_RESULT_OF(Kotlin_boxInt, self.intValue);
     case 'q': RETURN_RESULT_OF(Kotlin_boxLong, self.longLongValue);
+    case 'C': RETURN_RESULT_OF(Kotlin_boxUByte, self.unsignedCharValue);
+    case 'S': RETURN_RESULT_OF(Kotlin_boxUShort, self.unsignedShortValue);
+    case 'I': RETURN_RESULT_OF(Kotlin_boxUInt, self.unsignedIntValue);
+    case 'Q': RETURN_RESULT_OF(Kotlin_boxULong, self.unsignedLongLongValue);
     case 'f': RETURN_RESULT_OF(Kotlin_boxFloat, self.floatValue);
     case 'd': RETURN_RESULT_OF(Kotlin_boxDouble, self.doubleValue);
 
@@ -456,12 +547,6 @@ static Class __NSCFBooleanClass = nullptr;
 -(ObjHeader*)toKotlin:(ObjHeader**)OBJ_RESULT {
   RETURN_RESULT_OF(convertUnmappedObjCObject, self);
 }
-@end;
-
-@interface NSBlock <NSObject>
-@end;
-
-@interface NSBlock (NSBlockToKotlin) <ConvertibleToKotlin>
 @end;
 
 struct Block_descriptor_1;
@@ -513,9 +598,9 @@ static const char* getBlockEncoding(id block) {
 }
 
 // Note: replaced by compiler in appropriate compilation modes.
-__attribute__((weak)) const TypeInfo * const * Kotlin_ObjCExport_functionAdaptersToBlock = nullptr;
+__attribute__((weak)) convertReferenceFromObjC* Kotlin_ObjCExport_blockToFunctionConverters = nullptr;
 
-static const TypeInfo* getFunctionTypeInfoForBlock(id block) {
+static OBJ_GETTER(blockToKotlinImp, id block, SEL cmd) {
   const char* encoding = getBlockEncoding(block);
 
   // TODO: optimize:
@@ -540,24 +625,8 @@ static const TypeInfo* getFunctionTypeInfoForBlock(id block) {
           format:@"Blocks with non-reference-typed return value aren't supported (%s)", returnTypeEncoding];
   }
 
-  // TODO: support Unit-as-void.
-
-  return Kotlin_ObjCExport_functionAdaptersToBlock[parameterCount];
+  RETURN_RESULT_OF(Kotlin_ObjCExport_blockToFunctionConverters[parameterCount], block);
 }
-
-@implementation NSBlock (NSBlockToKotlin)
--(ObjHeader*)toKotlin:(ObjHeader**)OBJ_RESULT {
-
-  const TypeInfo* typeInfo = getFunctionTypeInfoForBlock(self);
-  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, objc_retainBlock(self));
-  // TODO: call (Any) constructor?
-}
-
--(void)releaseAsAssociatedObject {
-  objc_release(self);
-}
-
-@end;
 
 static id Kotlin_ObjCExport_refToObjC_slowpath(ObjHeader* obj);
 
@@ -594,6 +663,12 @@ extern "C" ALWAYS_INLINE id Kotlin_Interop_refToObjC(ObjHeader* obj) {
 extern "C" ALWAYS_INLINE OBJ_GETTER(Kotlin_Interop_refFromObjC, id obj) {
   // TODO: consider removing this function.
   RETURN_RESULT_OF(Kotlin_ObjCExport_refFromObjC, obj);
+}
+
+extern "C" OBJ_GETTER(Kotlin_Interop_CreateObjCObjectHolder, id obj) {
+  RuntimeAssert(obj != nullptr, "wrapped object must not be null");
+  const TypeInfo* typeInfo = theForeignObjCObjectTypeInfo;
+  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, objc_retain(obj));
 }
 
 extern "C" OBJ_GETTER(Kotlin_ObjCExport_refFromObjC, id obj) {
@@ -655,11 +730,15 @@ static const TypeInfo* createTypeInfo(
   TypeInfo* result = (TypeInfo*)konanAllocMemory(sizeof(TypeInfo) + vtable.size() * sizeof(void*));
   result->typeInfo_ = result;
 
-  MakeGlobalHash(nullptr, 0, &result->name_);
+  result->flags_ = TF_OBJC_DYNAMIC;
+
   result->instanceSize_ = superType->instanceSize_;
   result->superType_ = superType;
   result->objOffsets_ = superType->objOffsets_;
-  result->objOffsetsCount_ = superType->objOffsetsCount_;
+  result->objOffsetsCount_ = superType->objOffsetsCount_; // So TF_IMMUTABLE can also be inherited:
+  if ((superType->flags_ & TF_IMMUTABLE) != 0) {
+    result->flags_ |= TF_IMMUTABLE;
+  }
 
   KStdVector<const TypeInfo*> implementedInterfaces(
     superType->implementedInterfaces_, superType->implementedInterfaces_ + superType->implementedInterfacesCount_
@@ -685,9 +764,6 @@ static const TypeInfo* createTypeInfo(
 
   result->openMethods_ = openMethods_;
   result->openMethodsCount_ = methodTable.size();
-
-  result->fields_ = nullptr;
-  result->fieldsCount_ = 0;
 
   result->packageName_ = nullptr;
   result->relativeName_ = nullptr; // TODO: add some info.
@@ -779,6 +855,20 @@ static void insertOrReplace(KStdVector<MethodTableRecord>& methodTable, MethodNa
   methodTable.insert(methodTable.begin(), record);
 }
 
+static void throwIfCantBeOverridden(Class clazz, const KotlinToObjCMethodAdapter* adapter) {
+  if (adapter->kotlinImpl == nullptr) {
+    NSString* reason;
+    switch (adapter->vtableIndex) {
+      case -1: reason = @"it is final"; break;
+      case -2: reason = @"original Kotlin method has more than one selector"; break;
+      default: reason = @""; break;
+    }
+    [NSException raise:NSGenericException
+        format:@"[%s %s] can't be overridden: %@",
+        class_getName(clazz), adapter->selector, reason];
+  }
+}
+
 static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
   Class superClass = class_getSuperclass(clazz);
 
@@ -837,12 +927,7 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
       const KotlinToObjCMethodAdapter* adapter = &typeAdapter->reverseAdapters[i];
       if (definedSelectors.find(sel_registerName(adapter->selector)) == definedSelectors.end()) continue;
 
-      if (adapter->kotlinImpl == nullptr) {
-        [NSException raise:NSGenericException
-              format:@"[%s %s] can't be implemented",
-              class_getName(clazz), adapter->selector];
-        // TODO: describe the reasons
-      }
+      throwIfCantBeOverridden(clazz, adapter);
 
       insertOrReplace(methodTable, adapter->nameSignature, const_cast<void*>(adapter->kotlinImpl));
       if (adapter->vtableIndex != -1) vtable[adapter->vtableIndex] = adapter->kotlinImpl;
@@ -855,11 +940,7 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
 
     for (int i = 0; i < typeAdapter->reverseAdapterNum; ++i) {
       const KotlinToObjCMethodAdapter* adapter = &typeAdapter->reverseAdapters[i];
-      if (adapter->kotlinImpl == nullptr) {
-        [NSException raise:NSGenericException
-              format:@"[%s %s] can't be implemented",
-              class_getName(clazz), adapter->selector];
-      }
+      throwIfCantBeOverridden(clazz, adapter);
 
       insertOrReplace(methodTable, adapter->nameSignature, const_cast<void*>(adapter->kotlinImpl));
       RuntimeAssert(adapter->vtableIndex == -1, "");
@@ -946,6 +1027,7 @@ static Class createClass(const TypeInfo* typeInfo, Class superClass) {
       const ObjCTypeAdapter* typeAdapter = getTypeAdapter(interface);
       if (typeAdapter != nullptr) {
         addVirtualAdapters(result, typeAdapter);
+        addProtocolForAdapter(result, typeAdapter);
       }
     }
   }
@@ -991,7 +1073,6 @@ extern "C" void Kotlin_ObjCExport_AbstractMethodCalled(id self, SEL selector) {
         class_getName(object_getClass(self)), sel_getName(selector)];
 }
 
-__attribute__((constructor))
 static void checkLoadedOnce() {
   Class marker = objc_allocateClassPair([NSObject class], "KotlinFrameworkLoadedOnceMarker", 0);
   if (marker == nullptr) {

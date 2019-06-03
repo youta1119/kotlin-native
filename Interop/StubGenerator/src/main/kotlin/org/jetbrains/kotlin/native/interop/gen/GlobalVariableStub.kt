@@ -27,11 +27,15 @@ class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : Kot
         stubGenerator.simpleBridgeGenerator.kotlinToNative(
                 nativeBacked = this,
                 returnType = BridgedType.NATIVE_PTR,
-                kotlinValues = emptyList()
+                kotlinValues = emptyList(),
+                independent = false
         ) {
             "&${global.name}"
         }
     }
+
+    private val setterStub = object : NativeBacked {}
+
     val header: String
     val getter: KotlinExpression
     val setter: KotlinExpression?
@@ -55,7 +59,8 @@ class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : Kot
                 getter = mirror.info.argFromBridged(stubGenerator.simpleBridgeGenerator.kotlinToNative(
                         nativeBacked = this,
                         returnType = mirror.info.bridgedType,
-                        kotlinValues = emptyList()
+                        kotlinValues = emptyList(),
+                        independent = false
                 ) {
                     mirror.info.cToBridged(expr = global.name)
                 }, kotlinScope, nativeBacked = this)
@@ -66,14 +71,15 @@ class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : Kot
                     val bridgedValue = BridgeTypedKotlinValue(mirror.info.bridgedType, mirror.info.argToBridged("value"))
 
                     stubGenerator.simpleBridgeGenerator.kotlinToNative(
-                            nativeBacked = this,
+                            nativeBacked = setterStub,
                             returnType = BridgedType.VOID,
-                            kotlinValues = listOf(bridgedValue)
+                            kotlinValues = listOf(bridgedValue),
+                            independent = false
                     ) { nativeValues ->
                         out("${global.name} = ${mirror.info.cFromBridged(
                                 nativeValues.single(),
                                 scope,
-                                nativeBacked = this@GlobalVariableStub
+                                nativeBacked = setterStub
                         )};")
                         ""
                     }
@@ -90,8 +96,6 @@ class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : Kot
         }
 
         header = buildString {
-            append(if (setter != null) "var" else "val")
-            append(" ")
             append(getDeclarationName(kotlinScope, global.name))
             append(": ")
             append(kotlinType.render(kotlinScope))
@@ -105,18 +109,17 @@ class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : Kot
     override fun generate(context: StubGenerationContext): Sequence<String> {
         val lines = mutableListOf<String>()
         if (context.nativeBridges.isSupported(this)) {
-            lines.add(header)
+            val mutable = setter != null && context.nativeBridges.isSupported(setterStub)
+            val kind = if (mutable) "var" else "val"
+            lines.add("$kind $header")
             lines.add("    get() = $getter")
-            if (setter != null) {
+            if (mutable) {
                 lines.add("    set(value) { $setter }")
             }
         } else {
             lines.add(annotationForUnableToImport)
-            lines.add(header)
+            lines.add("val $header")
             lines.add("    get() = TODO()")
-            if (setter != null) {
-                lines.add("    set(value) = TODO()")
-            }
         }
 
         return lines.asSequence()

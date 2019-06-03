@@ -23,13 +23,13 @@ import java.io.File
 /**
  * Finds all "macro constants" and registers them as [NativeIndex.constants] in given index.
  */
-internal fun findMacroConstants(nativeIndex: NativeIndexImpl) {
-    val names = collectMacroConstantsNames(nativeIndex)
+internal fun findMacros(nativeIndex: NativeIndexImpl, translationUnit: CXTranslationUnit, headers: Set<CXFile?>) {
+    val names = collectMacroNames(nativeIndex, translationUnit, headers)
     // TODO: apply user-defined filters.
+    val macros = expandMacros(nativeIndex.library, names, typeConverter = { nativeIndex.convertType(it) })
 
-    val constants = expandMacroConstants(nativeIndex.library, names, typeConverter = { nativeIndex.convertType(it) })
-
-    nativeIndex.macroConstants.addAll(constants)
+    macros.filterIsInstanceTo(nativeIndex.macroConstants)
+    macros.filterIsInstanceTo(nativeIndex.wrappedMacros)
 }
 
 private typealias TypeConverter = (CValue<CXType>) -> Type
@@ -40,31 +40,30 @@ private typealias TypeConverter = (CValue<CXType>) -> Type
  *
  * @return the list of constants.
  */
-private fun expandMacroConstants(
+private fun expandMacros(
         originalLibrary: NativeLibrary,
         names: List<String>,
         typeConverter: TypeConverter
-): List<ConstantDef> {
+): List<MacroDef> {
 
     // Each macro is expanded by parsing it separately with the library;
     // so precompile library headers to significantly speed up the parsing:
     val library = originalLibrary.precompileHeaders()
 
-    val index = clang_createIndex(excludeDeclarationsFromPCH = 1, displayDiagnostics = 0)!!
-    try {
+    withIndex(excludeDeclarationsFromPCH = true) { index ->
         val sourceFile = library.createTempSource()
-        val translationUnit = parseTranslationUnit(index, sourceFile, library.compilerArgs, options = 0)
+        // We disable implicit function declaration to filter out cases when a macro is expanded as a function
+        // or function-like construction (e.g. #define FOO throw()) but such a function is undeclared.
+        val compilerArgs = library.compilerArgs + listOf("-Werror=implicit-function-declaration")
+        val translationUnit = parseTranslationUnit(index, sourceFile, compilerArgs, options = 0)
         try {
             translationUnit.ensureNoCompileErrors()
             return names.mapNotNull {
-                expandMacroAsConstant(library, translationUnit, sourceFile, it, typeConverter)
+                expandMacro(library, translationUnit, sourceFile, it, typeConverter)
             }
         } finally {
             clang_disposeTranslationUnit(translationUnit)
         }
-
-    } finally {
-        clang_disposeIndex(index)
     }
 }
 
@@ -74,13 +73,13 @@ private fun expandMacroConstants(
  *
  * As a side effect, modifies the [sourceFile] and reparses the [translationUnit].
  */
-private fun expandMacroAsConstant(
+private fun expandMacro(
         library: NativeLibrary,
         translationUnit: CXTranslationUnit,
         sourceFile: File,
         name: String,
         typeConverter: TypeConverter
-): ConstantDef? {
+): MacroDef? {
 
     reparseWithCodeSnippet(library, translationUnit, sourceFile, name)
 
@@ -95,7 +94,11 @@ private fun expandMacroAsConstant(
  * Adds the code snippet to be then processed with [processCodeSnippet] to the [sourceFile]
  * and reparses the [translationUnit].
  *
- * The code snippet should allow to extract the constant value using libclang API.
+ *  - If the code snippet allows extracting the constant value using libclang API, we'll add a [ConstantDef] in the
+ * native index and generate a Kotlin constant for it.
+ *  - If the expression type can be inferred by libclang, we'll add a [WrappedMacroDef] in the native index and
+ * generate a bridge for this macro.
+ *  - Otherwise the macro is skipped.
  */
 private fun reparseWithCodeSnippet(library: NativeLibrary,
                                    translationUnit: CXTranslationUnit, sourceFile: File,
@@ -110,7 +113,7 @@ private fun reparseWithCodeSnippet(library: NativeLibrary,
         val codeSnippetLines = when (library.language) {
             // Note: __auto_type is a GNU extension which is supported by clang.
             Language.C, Language.OBJECTIVE_C -> listOf(
-                    "const __auto_type KNI_INDEXER_VARIABLE = $name;"
+                    "void kni_indexer_function() { __auto_type KNI_INDEXER_VARIABLE = $name; }"
             )
         }
 
@@ -127,9 +130,10 @@ private fun processCodeSnippet(
         translationUnit: CXTranslationUnit,
         name: String,
         typeConverter: TypeConverter
-): ConstantDef? {
+): MacroDef? {
 
-    var state = VisitorState.EXPECT_VARIABLE
+    val kindsToSkip = listOf(CXCursorKind.CXCursor_FunctionDecl, CXCursorKind.CXCursor_CompoundStmt)
+    var state = VisitorState.EXPECT_NODES_TO_SKIP
     var evalResultOrNull: CXEvalResult? = null
     var typeOrNull: Type? = null
 
@@ -137,15 +141,8 @@ private fun processCodeSnippet(
         val kind = cursor.kind
         when {
             state == VisitorState.EXPECT_VARIABLE && kind == CXCursorKind.CXCursor_VarDecl -> {
-                val evalResult = clang_Cursor_Evaluate(cursor)
-
-                if (evalResult != null) {
-                    evalResultOrNull = evalResult
-                    state = VisitorState.EXPECT_VARIABLE_VALUE
-                } else {
-                    state = VisitorState.INVALID
-                }
-
+                evalResultOrNull = clang_Cursor_Evaluate(cursor)
+                state = VisitorState.EXPECT_VARIABLE_VALUE
                 CXChildVisitResult.CXChildVisit_Recurse
             }
 
@@ -153,6 +150,15 @@ private fun processCodeSnippet(
                 typeOrNull = typeConverter(clang_getCursorType(cursor))
                 state = VisitorState.EXPECT_END
                 CXChildVisitResult.CXChildVisit_Continue
+            }
+
+            // Skip auxiliary elements.
+            state == VisitorState.EXPECT_NODES_TO_SKIP && kind in kindsToSkip ->
+                CXChildVisitResult.CXChildVisit_Recurse
+
+            state == VisitorState.EXPECT_NODES_TO_SKIP && kind == CXCursorKind.CXCursor_DeclStmt -> {
+                state = VisitorState.EXPECT_VARIABLE
+                CXChildVisitResult.CXChildVisit_Recurse
             }
 
             else -> {
@@ -169,30 +175,40 @@ private fun processCodeSnippet(
             return null
         }
 
-        val evalResult = evalResultOrNull!!
         val type = typeOrNull!!
-        val evalResultKind = clang_EvalResult_getKind(evalResult)
+        return if (evalResultOrNull == null) {
+            // The macro cannot be evaluated as a constant so we will wrap it in a bridge.
+            when(type.unwrapTypedefs()) {
+                is PrimitiveType,
+                is PointerType,
+                is ObjCPointer -> WrappedMacroDef(name, type)
+                else -> null
+            }
+        } else {
+            // Otherwise we can evaluate the expression and create a Kotlin constant for it.
+            val evalResult = evalResultOrNull!!
+            val evalResultKind = clang_EvalResult_getKind(evalResult)
+            when (evalResultKind) {
+                CXEvalResultKind.CXEval_Int ->
+                    IntegerConstantDef(name, type, clang_EvalResult_getAsLongLong(evalResult))
 
-        return when (evalResultKind) {
-            CXEvalResultKind.CXEval_Int ->
-                IntegerConstantDef(name, type, clang_EvalResult_getAsLongLong(evalResult))
+                CXEvalResultKind.CXEval_Float ->
+                    FloatingConstantDef(name, type, clang_EvalResult_getAsDouble(evalResult))
 
-            CXEvalResultKind.CXEval_Float ->
-                FloatingConstantDef(name, type, clang_EvalResult_getAsDouble(evalResult))
+                CXEvalResultKind.CXEval_CFStr,
+                CXEvalResultKind.CXEval_ObjCStrLiteral,
+                CXEvalResultKind.CXEval_StrLiteral ->
+                    if (evalResultKind == CXEvalResultKind.CXEval_StrLiteral && !type.canonicalIsPointerToChar()) {
+                        // libclang doesn't seem to support wide string literals properly in this API;
+                        // thus disable wide literals here:
+                        null
+                    } else {
+                        StringConstantDef(name, type, clang_EvalResult_getAsStr(evalResult)!!.toKString())
+                    }
 
-            CXEvalResultKind.CXEval_CFStr,
-            CXEvalResultKind.CXEval_ObjCStrLiteral,
-            CXEvalResultKind.CXEval_StrLiteral ->
-                if (evalResultKind == CXEvalResultKind.CXEval_StrLiteral && !type.canonicalIsPointerToChar()) {
-                    // libclang doesn't seem to support wide string literals properly in this API;
-                    // thus disable wide literals here:
-                    null
-                } else {
-                    StringConstantDef(name, type, clang_EvalResult_getAsStr(evalResult)!!.toKString())
-                }
-
-            CXEvalResultKind.CXEval_Other,
-            CXEvalResultKind.CXEval_UnExposed -> null
+                CXEvalResultKind.CXEval_Other,
+                CXEvalResultKind.CXEval_UnExposed -> null
+            }
         }
 
     } finally {
@@ -201,46 +217,31 @@ private fun processCodeSnippet(
 }
 
 enum class VisitorState {
+    EXPECT_NODES_TO_SKIP,
     EXPECT_VARIABLE, EXPECT_VARIABLE_VALUE,
     EXPECT_END, INVALID
 }
 
-private fun collectMacroConstantsNames(nativeIndex: NativeIndexImpl): List<String> {
+private fun collectMacroNames(nativeIndex: NativeIndexImpl, translationUnit: CXTranslationUnit, headers: Set<CXFile?>): List<String> {
     val result = mutableSetOf<String>()
-    val index = clang_createIndex(excludeDeclarationsFromPCH = 0, displayDiagnostics = 0)!!
-    try {
-        // Include macros into AST:
-        val options = CXTranslationUnit_DetailedPreprocessingRecord
 
-        val translationUnit = nativeIndex.library.parse(index, options)
-        try {
-            translationUnit.ensureNoCompileErrors()
-            val headers = getFilteredHeaders(nativeIndex, index, translationUnit)
-
-            visitChildren(translationUnit) { cursor, _ ->
-                val file = memScoped {
-                    val fileVar = alloc<CXFileVar>()
-                    clang_getFileLocation(clang_getCursorLocation(cursor), fileVar.ptr, null, null, null)
-                    fileVar.value
-                }
-
-                if (cursor.kind == CXCursorKind.CXCursor_MacroDefinition &&
-                        nativeIndex.library.includesDeclaration(cursor) &&
-                        file != null && // Builtin macros mostly seem to be useless.
-                        file in headers &&
-                        canMacroBeConstant(cursor))
-                {
-                    val spelling = getCursorSpelling(cursor)
-                    result.add(spelling)
-                }
-                CXChildVisitResult.CXChildVisit_Continue
-            }
-
-        } finally {
-            clang_disposeTranslationUnit(translationUnit)
+    visitChildren(translationUnit) { cursor, _ ->
+        val file = memScoped {
+            val fileVar = alloc<CXFileVar>()
+            clang_getFileLocation(clang_getCursorLocation(cursor), fileVar.ptr, null, null, null)
+            fileVar.value
         }
-    } finally {
-        clang_disposeIndex(index)
+
+        if (cursor.kind == CXCursorKind.CXCursor_MacroDefinition &&
+                nativeIndex.library.includesDeclaration(cursor) &&
+                file != null && // Builtin macros mostly seem to be useless.
+                file in headers &&
+                canMacroBeConstant(cursor))
+        {
+            val spelling = getCursorSpelling(cursor)
+            result.add(spelling)
+        }
+        CXChildVisitResult.CXChildVisit_Continue
     }
 
     return result.toList()

@@ -1,35 +1,35 @@
-apply plugin: 'konan'
+plugins {
+    id 'kotlin-multiplatform'
+}
 
-konan.targets = ['macbook', 'linux']
+def tensorflowHome = "${MPPTools.kotlinNativeDataPath()}/third-party/tensorflow"
 
-def konanUserDir = System.getenv("KONAN_DATA_DIR") ?: "${System.getProperty("user.home")}/.konan"
-def tensorflowHome = "$konanUserDir/third-party/tensorflow"
+// Determine host preset.
+def hostPreset = MPPTools.defaultHostPreset(project, [kotlin.presets.macosX64, kotlin.presets.linuxX64])
+
+kotlin {
+    targets {
+        fromPreset(hostPreset, 'tensorflow') {
+            compilations.main.outputKinds 'EXECUTABLE'
+            compilations.main.entryPoint 'sample.tensorflow.main'
+            compilations.main.linkerOpts "-L$tensorflowHome/lib", '-ltensorflow'
+            compilations.main.cinterops {
+                tensorflow {
+                    includeDirs "$tensorflowHome/include"
+                }
+            }
+        }
+    }
+}
 
 task downloadTensorflow(type: Exec) {
-    workingDir getProjectDir()
+    workingDir projectDir
     commandLine './downloadTensorflow.sh'
 }
+tasks[kotlin.targets.tensorflow.compilations.main.cinterops.tensorflow.interopProcessingTaskName].dependsOn downloadTensorflow
 
-konanArtifacts {
-    interop('TensorflowInterop') {
-        defFile "src/main/c_interop/tensorflow.def"
-        includeDirs "${tensorflowHome}/include"
-        dependsOn 'downloadTensorflow'
-    }
 
-    program('Tensorflow') {
-        libraries {
-            artifact 'TensorflowInterop'
-        }
-        linkerOpts "-L${tensorflowHome}/lib -ltensorflow"
-    }
-}
-
-run.dependsOn 'warning'
-
-task warning {
-    doLast {
-        println "Note: You may need to specify LD_LIBRARY_PATH or DYLD_LIBRARY_PATH env variables to $tensorflowHome/lib if the TensorFlow dynamic library cannot be found."
-
-    }
+MPPTools.createRunTask(project, 'runProgram', kotlin.targets.tensorflow) {
+    environment 'LD_LIBRARY_PATH': "$tensorflowHome/lib"
+    environment 'DYLD_LIBRARY_PATH': "$tensorflowHome/lib"
 }

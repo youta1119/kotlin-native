@@ -1,51 +1,42 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
+@file:Suppress("NOTHING_TO_INLINE")
 
 package kotlin
 
+import kotlin.native.internal.TypedIntrinsic
+import kotlin.native.internal.IntrinsicType
+
 /**
  * Represents a 16-bit Unicode character.
- * On the JVM, non-nullable values of this type are represented as values of the primitive type `char`.
  */
-public final class Char : Comparable<Char> {
-
+public class Char private constructor() : Comparable<Char> {
     /**
      * Compares this value with the specified value for order.
-     * Returns zero if this value is equal to the specified other value, a negative number if its less than other,
-     * or a positive number if its greater than other.
+     *
+     * Returns zero if this value is equal to the specified other value, a negative number if it's less than other,
+     * or a positive number if it's greater than other.
      */
-    @SymbolName("Kotlin_Char_compareTo_Char")
+    @TypedIntrinsic(IntrinsicType.UNSIGNED_COMPARE_TO)
     external public override fun compareTo(other: Char): Int
 
     /** Adds the other Int value to this value resulting a Char. */
-    @SymbolName("Kotlin_Char_plus_Int")
-    external public operator fun plus(other: Int): Char
-
+    public inline operator fun plus(other: Int): Char =
+            (this.toInt() + other).toChar()
     /** Subtracts the other Char value from this value resulting an Int. */
-    @SymbolName("Kotlin_Char_minus_Char")
-    external public operator fun minus(other: Char): Int
+    public inline operator fun minus(other: Char): Int =
+            this.toInt() - other.toInt()
     /** Subtracts the other Int value from this value resulting a Char. */
-    @SymbolName("Kotlin_Char_minus_Int")
-    external public operator fun minus(other: Int): Char
+    public inline operator fun minus(other: Int): Char =
+            (this.toInt() - other).toChar()
 
     /** Increments this value. */
-    @SymbolName("Kotlin_Char_inc")
+    @TypedIntrinsic(IntrinsicType.INC)
     external public operator fun inc(): Char
     /** Decrements this value. */
-    @SymbolName("Kotlin_Char_dec")
+    @TypedIntrinsic(IntrinsicType.DEC)
     external public operator fun dec(): Char
 
     /** Creates a range from this value to the specified [other] value. */
@@ -54,28 +45,50 @@ public final class Char : Comparable<Char> {
     }
 
     /** Returns the value of this character as a `Byte`. */
-    @SymbolName("Kotlin_Char_toByte")
+    @TypedIntrinsic(IntrinsicType.INT_TRUNCATE)
     external public fun toByte(): Byte
     /** Returns the value of this character as a `Char`. */
-    @SymbolName("Kotlin_Char_toChar")
-    external public fun toChar(): Char
+    public inline fun toChar(): Char = this
     /** Returns the value of this character as a `Short`. */
-    @SymbolName("Kotlin_Char_toShort")
+    @TypedIntrinsic(IntrinsicType.ZERO_EXTEND)
     external public fun toShort(): Short
     /** Returns the value of this character as a `Int`. */
-    @SymbolName("Kotlin_Char_toInt")
+    @TypedIntrinsic(IntrinsicType.ZERO_EXTEND)
     external public fun toInt(): Int
     /** Returns the value of this character as a `Long`. */
-    @SymbolName("Kotlin_Char_toLong")
+    @TypedIntrinsic(IntrinsicType.ZERO_EXTEND)
     external public fun toLong(): Long
     /** Returns the value of this character as a `Float`. */
-    @SymbolName("Kotlin_Char_toFloat")
+    @TypedIntrinsic(IntrinsicType.UNSIGNED_TO_FLOAT)
     external public fun toFloat(): Float
     /** Returns the value of this character as a `Double`. */
-    @SymbolName("Kotlin_Char_toDouble")
+    @TypedIntrinsic(IntrinsicType.UNSIGNED_TO_FLOAT)
     external public fun toDouble(): Double
 
     companion object {
+        /**
+         * The minimum value of a character code unit.
+         */
+        @SinceKotlin("1.3")
+        public const val MIN_VALUE: Char = '\u0000'
+
+        /**
+         * The maximum value of a character code unit.
+         */
+        @SinceKotlin("1.3")
+        public const val MAX_VALUE: Char = '\uFFFF'
+
+        /**
+         * The number of bytes used to represent a Char in a binary form.
+         */
+        @SinceKotlin("1.3")
+        public const val SIZE_BYTES: Int = 2
+        /**
+         * The number of bits used to represent a Char in a binary form.
+         */
+        @SinceKotlin("1.3")
+        public const val SIZE_BITS: Int = 16
+
         /**
          * The minimum value of a Unicode high-surrogate code unit.
          */
@@ -127,16 +140,15 @@ public final class Char : Comparable<Char> {
         public const val MIN_RADIX: Int = 2
 
         /**
-         * The minimum radix available for conversion to and from strings.
+         * The maximum radix available for conversion to and from strings.
          */
         public const val MAX_RADIX: Int = 36
     }
 
-    // Konan-specific.
-    public fun equals(other: Char): Boolean = konan.internal.areEqualByValue(this, other)
+    public fun equals(other: Char): Boolean = this == other
 
     public override fun equals(other: Any?): Boolean =
-            other is Char && konan.internal.areEqualByValue(this, other)
+            other is Char && this.equals(other)
 
     @SymbolName("Kotlin_Char_toString")
     external public override fun toString(): String

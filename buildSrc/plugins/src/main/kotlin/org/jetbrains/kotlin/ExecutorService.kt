@@ -75,7 +75,11 @@ fun create(project: Project): ExecutorService {
                     val absoluteQemu = "$absoluteTargetToolchain/bin/$qemu"
                     val exe = executable
                     executable = absoluteQemu
-                    args = listOf("-L", absoluteTargetSysRoot, exe) + args
+                    args = listOf("-L", absoluteTargetSysRoot,
+                        // This is to workaround an endianess issue.
+                        // See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=731082 for details.
+                        "$absoluteTargetSysRoot/lib/ld.so.1", "--inhibit-cache",
+                        exe) + args
                 }
             }
         }
@@ -118,11 +122,24 @@ fun runProcess(executor: (Action<in ExecSpec>) -> ExecResult?,
     val stdOut = outStream.toString("UTF-8")
     val stdErr = errStream.toString("UTF-8")
 
-    return ProcessOutput(stdOut, stdErr, execResult!!.exitValue)
+    return ProcessOutput(stdOut, stdErr, execResult.exitValue)
 }
 
 fun runProcess(executor: (Action<in ExecSpec>) -> ExecResult?,
                executable: String, vararg args: String) = runProcess(executor, executable, args.toList())
+
+/**
+ * Creates a new executor service with additional action [actionParameter] executed after the main one.
+ * The following is an example how to pass an environment parameter
+ * @code `executor.add(Action { it.environment = mapOf("JAVA_OPTS" to "-verbose:gc") })::execute`
+ */
+fun ExecutorService.add(actionParameter: Action<in ExecSpec>) = object : ExecutorService {
+    override fun execute(action: Action<in ExecSpec>): ExecResult? =
+            this@add.execute(Action {
+                action.execute(it)
+                actionParameter.execute(it)
+            })
+}
 
 /**
  * Returns Project's process executor
@@ -168,6 +185,8 @@ private fun simulator(project: Project) : ExecutorService = object : ExecutorSer
 private fun sshExecutor(project: Project) : ExecutorService = object : ExecutorService {
 
     private val remote: String = project.property("remote").toString()
+    private val sshArgs: List<String> = System.getenv("SSH_ARGS")?.split(" ") ?: emptyList()
+    private val sshHome = System.getenv("SSH_HOME") ?: "/usr/bin"
 
     // Unique remote dir name to be used in the target host
     private val remoteDir = run {
@@ -186,7 +205,7 @@ private fun sshExecutor(project: Project) : ExecutorService = object : ExecutorS
                 upload(executable)
                 executable = "$remoteDir/${File(executable).name}"
                 execFile = executable
-                commandLine = arrayListOf("/usr/bin/ssh", remote) + commandLine
+                commandLine = arrayListOf("$sshHome/ssh") + sshArgs + remote + commandLine
             }
         }
         cleanup(execFile!!)
@@ -195,19 +214,19 @@ private fun sshExecutor(project: Project) : ExecutorService = object : ExecutorS
 
     private fun createRemoteDir() {
         project.exec {
-            it.commandLine("ssh", remote, "mkdir", "-p", remoteDir)
+            it.commandLine = arrayListOf("$sshHome/ssh") + sshArgs + remote + "mkdir" + "-p" + remoteDir
         }
     }
 
     private fun upload(fileName: String) {
         project.exec {
-            it.commandLine("scp", fileName, "$remote:$remoteDir")
+            it.commandLine = arrayListOf("$sshHome/scp") + sshArgs + fileName + "$remote:$remoteDir"
         }
     }
 
     private fun cleanup(fileName: String) {
         project.exec {
-            it.commandLine("ssh", remote, "rm", fileName)
+            it.commandLine = arrayListOf("$sshHome/ssh") + sshArgs + remote + "rm" + fileName
         }
     }
 }

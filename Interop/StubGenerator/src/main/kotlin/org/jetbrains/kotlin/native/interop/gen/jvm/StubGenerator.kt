@@ -30,7 +30,6 @@ class StubGenerator(
         val nativeIndex: NativeIndex,
         val configuration: InteropConfiguration,
         val libName: String,
-        val dumpShims: Boolean,
         val verbose: Boolean = false,
         val platform: KotlinPlatform = KotlinPlatform.JVM,
         val imports: Imports
@@ -54,8 +53,13 @@ class StubGenerator(
         pkgName.substringAfterLast('.')
     }
 
+    val generatedObjCCategoriesMembers = mutableMapOf<ObjCClass, GeneratedObjCCategoriesMembers>()
+
     val excludedFunctions: Set<String>
         get() = configuration.excludedFunctions
+
+    val excludedMacros: Set<String>
+        get() = configuration.excludedMacros
 
     val noStringConversion: Set<String>
         get() = configuration.noStringConversion
@@ -70,9 +74,6 @@ class StubGenerator(
         val typedefNames = nativeIndex.typedefs.map { it.name }
         typedefNames.toSet()
     }
-
-    val StructDecl.isAnonymous: Boolean
-        get() = spelling.contains("(anonymous ") // TODO: it is a hack
 
     val anonymousStructKotlinNames = mutableMapOf<StructDecl, String>()
 
@@ -156,13 +157,19 @@ class StubGenerator(
         override fun getPackageFor(declaration: TypeDeclaration): String {
             return imports.getPackage(declaration.location) ?: pkgName
         }
+
+        override val useUnsignedTypes: Boolean
+            get() = when (platform) {
+                KotlinPlatform.JVM -> false
+                KotlinPlatform.NATIVE -> true
+            }
     }
 
     fun mirror(type: Type): TypeMirror = mirror(declarationMapper, type)
 
     val functionsToBind = nativeIndex.functions.filter { it.name !in excludedFunctions }
 
-    private val macroConstantsByName = nativeIndex.macroConstants.associateBy { it.name }
+    private val macroConstantsByName = (nativeIndex.macroConstants + nativeIndex.wrappedMacros).associateBy { it.name }
 
     val kotlinFile = object : KotlinFile(pkgName, namesToBeDeclared = computeNamesToBeDeclared()) {
         override val mappingBridgeGenerator: MappingBridgeGenerator
@@ -317,7 +324,8 @@ class StubGenerator(
     }
 
     // We take this approach as generic 'const short*' shall not be used as String.
-    fun representCFunctionParameterAsWString(type: Type)= type.isAliasOf(platformWStringTypes)
+    fun representCFunctionParameterAsWString(function: FunctionDecl, type: Type) = type.isAliasOf(platformWStringTypes)
+            && !noStringConversion.contains(function.name)
 
     private fun getArrayLength(type: ArrayType): Long {
         val unwrappedElementType = type.elemType.unwrapTypedefs()
@@ -347,8 +355,12 @@ class StubGenerator(
         }
 
         if (platform == KotlinPlatform.JVM) {
-            if (def.hasNaturalLayout) {
-                out("@CNaturalStruct(${def.fields.joinToString { it.name.quoteAsKotlinLiteral() }})")
+            if (def.kind == StructDef.Kind.STRUCT && def.fieldsHaveDefaultAlignment()) {
+                out("@CNaturalStruct(${def.members.joinToString { it.name.quoteAsKotlinLiteral() }})")
+            }
+        } else {
+            tryRenderStructOrUnion(def)?.let {
+                out("@CStruct".applyToStrings(it))
             }
         }
 
@@ -361,8 +373,6 @@ class StubGenerator(
             for (field in def.fields) {
                 try {
                     assert(field.name.isNotEmpty())
-
-                    if (field.offset < 0) throw NotImplementedError();
                     assert(field.offset % 8 == 0L)
                     val offset = field.offset / 8
                     val fieldRefType = mirror(field.type)
@@ -472,7 +482,8 @@ class StubGenerator(
 
         block("enum class ${kotlinFile.declare(clazz)}(override val value: $baseKotlinType) : CEnum") {
             canonicalConstants.forEach {
-                out("${it.name.asSimpleName()}(${it.value}),")
+                val literal = integerLiteral(e.baseType, it.value)!!
+                out("${it.name.asSimpleName()}($literal),")
             }
             out(";")
             out("")
@@ -511,15 +522,15 @@ class StubGenerator(
             it.name !in macroConstantsByName
         }
 
-        val typeName: String
+        val kotlinType: KotlinType
 
-        val baseKotlinType = mirror(e.baseType).argType.render(kotlinFile)
+        val baseKotlinType = mirror(e.baseType).argType
         if (e.isAnonymous) {
             if (constants.isNotEmpty()) {
                 out("// ${e.spelling}:")
             }
 
-            typeName = baseKotlinType
+            kotlinType = baseKotlinType
         } else {
             val typeMirror = mirror(EnumType(e))
             if (typeMirror !is TypeMirror.ByValue) {
@@ -531,18 +542,18 @@ class StubGenerator(
             val varTypeClassifier = typeMirror.pointedType.classifier
             val valueTypeClassifier = typeMirror.valueType.classifier
             out("typealias ${kotlinFile.declare(varTypeClassifier)} = $varTypeName")
-            out("typealias ${kotlinFile.declare(valueTypeClassifier)} = $baseKotlinType")
+            out("typealias ${kotlinFile.declare(valueTypeClassifier)} = ${baseKotlinType.render(kotlinFile)}")
 
             if (constants.isNotEmpty()) {
                 out("")
             }
 
-            typeName = typeMirror.valueType.render(kotlinFile)
+            kotlinType = typeMirror.valueType
         }
 
         for (constant in constants) {
             val literal = integerLiteral(e.baseType, constant.value) ?: continue
-            out("val ${constant.name.asSimpleName()}: $typeName = $literal")
+            out(topLevelValWithGetter(constant.name, kotlinType, literal))
         }
     }
 
@@ -580,29 +591,27 @@ class StubGenerator(
         return stubs
     }
 
-    private fun FunctionDecl.generateAsFfiVarargs(): Boolean = (platform == KotlinPlatform.NATIVE && this.isVararg &&
-            // Neither takes nor returns structs by value:
-            !this.returnsRecord() && this.parameters.all { it.type.unwrapTypedefs() !is RecordType })
-
-    private fun FunctionDecl.returnsRecord(): Boolean = this.returnType.unwrapTypedefs() is RecordType
     private fun FunctionDecl.returnsVoid(): Boolean = this.returnType.unwrapTypedefs() is VoidType
 
     private inner class KotlinFunctionStub(val func: FunctionDecl) : KotlinStub, NativeBacked {
         override fun generate(context: StubGenerationContext): Sequence<String> =
-                if (context.nativeBridges.isSupported(this)) {
+                if (isCCall) {
+                    sequenceOf("@CCall".applyToStrings(cCallSymbolName!!), "external $header")
+                } else if (context.nativeBridges.isSupported(this)) {
                     block(header, bodyLines)
                 } else {
                     sequenceOf(
                             annotationForUnableToImport,
-                            "external $header"
+                            "$header = throw UnsupportedOperationException()"
                     )
                 }
 
         private val header: String
         private val bodyLines: List<String>
+        private val isCCall: Boolean
+        private val cCallSymbolName: String?
 
         init {
-            // TODO: support dumpShims
             val kotlinParameters = mutableListOf<Pair<String, KotlinType>>()
             val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
             val bridgeArguments = mutableListOf<TypedKotlinValue>()
@@ -619,67 +628,57 @@ class StubGenerator(
                 val representAsValuesRef = representCFunctionParameterAsValuesRef(parameter.type)
 
                 val bridgeArgument = if (representCFunctionParameterAsString(func, parameter.type)) {
-                    kotlinParameters.add(parameterName to KotlinTypes.string.makeNullable())
+                    val annotations = when (platform) {
+                        KotlinPlatform.JVM -> ""
+                        KotlinPlatform.NATIVE -> "@CCall.CString "
+                    }
+                    kotlinParameters.add(annotations + parameterName to KotlinTypes.string.makeNullable())
                     bodyGenerator.pushMemScoped()
                     "$parameterName?.cstr?.getPointer(memScope)"
-                } else if (representCFunctionParameterAsWString(parameter.type)) {
-                    kotlinParameters.add(parameterName to KotlinTypes.string.makeNullable())
+                } else if (representCFunctionParameterAsWString(func, parameter.type)) {
+                    val annotations = when (platform) {
+                        KotlinPlatform.JVM -> ""
+                        KotlinPlatform.NATIVE -> "@CCall.WCString "
+                    }
+                    kotlinParameters.add(annotations + parameterName to KotlinTypes.string.makeNullable())
                     bodyGenerator.pushMemScoped()
                     "$parameterName?.wcstr?.getPointer(memScope)"
                 } else if (representAsValuesRef != null) {
                     kotlinParameters.add(parameterName to representAsValuesRef)
                     bodyGenerator.pushMemScoped()
-                    "$parameterName?.getPointer(memScope)"
+                    bodyGenerator.getNativePointer(parameterName)
                 } else {
                     val mirror = mirror(parameter.type)
                     kotlinParameters.add(parameterName to mirror.argType)
                     parameterName
                 }
-
                 bridgeArguments.add(TypedKotlinValue(parameter.type, bridgeArgument))
             }
 
-            if (!func.generateAsFfiVarargs()) {
+            if (!func.isVararg || platform != KotlinPlatform.NATIVE) {
                 val result = mappingBridgeGenerator.kotlinToNative(
                         bodyGenerator,
                         this,
                         func.returnType,
-                        bridgeArguments
+                        bridgeArguments,
+                        independent = false
                 ) { nativeValues ->
                     "${func.name}(${nativeValues.joinToString()})"
                 }
-                bodyGenerator.out("return $result")
+                bodyGenerator.returnResult(result)
+                isCCall = false
+                cCallSymbolName = null
             } else {
-                val returnTypeKind = getFfiTypeKind(func.returnType)
-
                 kotlinParameters.add("vararg variadicArguments" to KotlinTypes.any.makeNullable())
-                bodyGenerator.pushMemScoped()
+                isCCall = true // TODO: don't generate unused body in this case.
+                cCallSymbolName = "knifunptr_" + pkgName.replace('.', '_') + nextUniqueId()
 
-                val resultVar = "kniResult"
-
-                val resultPtr = if (!func.returnsVoid()) {
-                    val returnType = mirror(func.returnType).pointedType.render(kotlinFile)
-                    bodyGenerator.out("val $resultVar = allocFfiReturnValueBuffer<$returnType>(typeOf<$returnType>())")
-                    "$resultVar.rawPtr"
-                } else {
-                    "nativeNullPtr"
-                }
-                val fixedArguments = bridgeArguments.joinToString(", ") { it.value }
-
-                val functionPtr = simpleBridgeGenerator.kotlinToNative(
+                simpleBridgeGenerator.insertNativeBridge(
                         this,
-                        BridgedType.NATIVE_PTR,
-                        emptyList()
-                ) {
-                    func.name
-                }
-
-                bodyGenerator.out("callWithVarargs($functionPtr, $resultPtr, $returnTypeKind, " +
-                        "arrayOf($fixedArguments), variadicArguments, memScope)")
-
-                if (!func.returnsVoid()) {
-                    bodyGenerator.out("return $resultVar.value")
-                }
+                        emptyList(),
+                        listOf("extern const void* $cCallSymbolName __asm(${cCallSymbolName.quoteAsKotlinLiteral()});",
+                                "extern const void* $cCallSymbolName = &${func.name};")
+                )
             }
 
             val returnType = if (func.returnsVoid()) {
@@ -691,53 +690,46 @@ class StubGenerator(
             val joinedKotlinParameters = kotlinParameters.joinToString { (name, type) ->
                 "$name: ${type.render(kotlinFile)}"
             }
-            this.header = "fun ${func.name}($joinedKotlinParameters): $returnType"
+            this.header = "fun ${func.name.asSimpleName()}($joinedKotlinParameters): $returnType"
 
             this.bodyLines = bodyGenerator.build()
         }
     }
 
-    private fun getFfiTypeKind(type: Type): String {
-        val unwrappedType = type.unwrapTypedefs()
-        return when (unwrappedType) {
-            is VoidType -> "FFI_TYPE_KIND_VOID"
-            is PointerType -> "FFI_TYPE_KIND_POINTER"
-            is IntegerType -> when (unwrappedType.size) {
-                1 -> "FFI_TYPE_KIND_SINT8"
-                2 -> "FFI_TYPE_KIND_SINT16"
-                4 -> "FFI_TYPE_KIND_SINT32"
-                8 -> "FFI_TYPE_KIND_SINT64"
-                else -> TODO(unwrappedType.toString())
-            }
-            is FloatingType -> when (unwrappedType.size) {
-                4 -> "FFI_TYPE_KIND_FLOAT"
-                8 -> "FFI_TYPE_KIND_DOUBLE"
-                else -> TODO(unwrappedType.toString())
-            }
-            is EnumType -> getFfiTypeKind(unwrappedType.def.baseType)
-            else -> TODO(unwrappedType.toString())
-        }
+    private fun integerLiteral(type: Type, value: Long): String? {
+        val integerType = type.unwrapTypedefs() as? IntegerType ?: return null
+        return integerLiteral(integerType.size, declarationMapper.isMappedToSigned(integerType), value)
     }
 
-    private fun integerLiteral(type: Type, value: Long): String? {
-        if (value == Long.MIN_VALUE) {
-            return "${value + 1} - 1" // Workaround for "The value is out of range" compile error.
-        }
+    private fun integerLiteral(size: Int, isSigned: Boolean, value: Long): String? {
+        return if (isSigned) {
+            if (value == Long.MIN_VALUE) {
+                return "${value + 1} - 1" // Workaround for "The value is out of range" compile error.
+            }
 
-        val unwrappedType = type.unwrapTypedefs()
-        if (unwrappedType !is PrimitiveType) {
-            return null
-        }
+            val narrowedValue: Number = when (size) {
+                1 -> value.toByte()
+                2 -> value.toShort()
+                4 -> value.toInt()
+                8 -> value
+                else -> return null
+            }
 
-        val narrowedValue: Number = when (unwrappedType.kotlinType) {
-            KotlinTypes.byte -> value.toByte()
-            KotlinTypes.short -> value.toShort()
-            KotlinTypes.int -> value.toInt()
-            KotlinTypes.long -> value
-            else -> return null
-        }
+            narrowedValue.toString()
+        } else {
+            // Note: stub generator is built and run with different ABI versions,
+            // so Kotlin unsigned types can't be used here currently.
 
-        return narrowedValue.toString()
+            val narrowedValue: String = when (size) {
+                1 -> (value and 0xFF).toString()
+                2 -> (value and 0xFFFF).toString()
+                4 -> (value and 0xFFFFFFFF).toString()
+                8 -> java.lang.Long.toUnsignedString(value)
+                else -> return null
+            }
+
+            "${narrowedValue}u"
+        }
     }
 
     private fun floatingLiteral(type: Type, value: Double): String? {
@@ -757,37 +749,41 @@ class StubGenerator(
         }
     }
 
+    private fun topLevelValWithGetter(name: String, type: KotlinType, expressionBody: String): String =
+            "val ${name.asSimpleName()}: ${type.render(kotlinFile)} get() = $expressionBody"
+
+    private fun topLevelConstVal(name: String, type: KotlinType, initializer: String): String =
+            "const val ${name.asSimpleName()}: ${type.render(kotlinFile)} = $initializer"
+
     private fun generateConstant(constant: ConstantDef) {
-        val literal = when (constant) {
-            is IntegerConstantDef -> integerLiteral(constant.type, constant.value) ?: return
-            is FloatingConstantDef -> floatingLiteral(constant.type, constant.value) ?: return
-            is StringConstantDef -> constant.value.quoteAsKotlinLiteral()
-            else -> {
-                // Not supported yet, ignore:
-                return
+        val kotlinName = constant.name
+        val declaration = when (constant) {
+            is IntegerConstantDef -> {
+                val literal = integerLiteral(constant.type, constant.value) ?: return
+                val kotlinType = mirror(constant.type).argType
+                when (platform) {
+                    KotlinPlatform.NATIVE -> topLevelConstVal(kotlinName, kotlinType, literal)
+                    // No reason to make it const val with backing field on Kotlin/JVM yet:
+                    KotlinPlatform.JVM -> topLevelValWithGetter(kotlinName, kotlinType, literal)
+                }
             }
+            is FloatingConstantDef -> {
+                val literal = floatingLiteral(constant.type, constant.value) ?: return
+                val kotlinType = mirror(constant.type).argType
+                topLevelValWithGetter(kotlinName, kotlinType, literal)
+            }
+            is StringConstantDef -> {
+                val literal = constant.value.quoteAsKotlinLiteral()
+                val kotlinType = KotlinTypes.string
+                topLevelValWithGetter(kotlinName, kotlinType, literal)
+            }
+            else -> return
         }
 
-        val kotlinType = when (constant) {
-            is IntegerConstantDef,
-            is FloatingConstantDef -> mirror(constant.type).argType
+        out(declaration)
 
-            is StringConstantDef -> KotlinTypes.string
-
-            else -> {
-                // Not supported yet, ignore:
-                return
-            }
-        }.render(kotlinFile)
-
-        // TODO: improve value rendering.
-
-        // TODO: consider using `const` modifier.
-        // It is not currently possible for floating literals.
-        // Also it provokes constant propagation which can reduce binary compatibility
-        // when replacing interop stubs without recompiling the application.
-
-        out("val ${constant.name.asSimpleName()}: $kotlinType get() = $literal")
+        // TODO: consider using `const` modifier in all cases.
+        // Note: It is not currently possible for floating literals.
     }
 
     private fun generateStubs(): List<KotlinStub> {
@@ -811,13 +807,23 @@ class StubGenerator(
             ObjCCategoryStub(this, it)
         }
 
-        nativeIndex.macroConstants.forEach {
+        nativeIndex.macroConstants.filter { it.name !in excludedMacros }.forEach {
             try {
                 stubs.add(
                         generateKotlinFragmentBy { generateConstant(it) }
                 )
             } catch (e: Throwable) {
                 log("Warning: cannot generate stubs for constant ${it.name}")
+            }
+        }
+
+        nativeIndex.wrappedMacros.filter { it.name !in excludedMacros }.forEach {
+            try {
+                stubs.add(
+                        GlobalVariableStub(GlobalDecl(it.name, it.type, isConst = true), this)
+                )
+            } catch (e: Throwable) {
+                log("Warning: cannot generate stubs for macro ${it.name}")
             }
         }
 
@@ -879,14 +885,18 @@ class StubGenerator(
             if (configuration.library.language == Language.OBJECTIVE_C) {
                 add("CONFLICTING_OVERLOADS")
                 add("RETURN_TYPE_MISMATCH_ON_INHERITANCE")
+                add("PROPERTY_TYPE_MISMATCH_ON_INHERITANCE") // Multiple-inheriting property with conflicting types
+                add("VAR_TYPE_MISMATCH_ON_INHERITANCE") // Multiple-inheriting mutable property with conflicting types
                 add("RETURN_TYPE_MISMATCH_ON_OVERRIDE")
                 add("WRONG_MODIFIER_CONTAINING_DECLARATION") // For `final val` in interface.
                 add("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
                 add("UNUSED_PARAMETER") // For constructors.
+                add("MANY_IMPL_MEMBER_NOT_IMPLEMENTED") // Workaround for multiple-inherited properties.
                 add("MANY_INTERFACES_MEMBER_NOT_IMPLEMENTED") // Workaround for multiple-inherited properties.
                 add("EXTENSION_SHADOWED_BY_MEMBER") // For Objective-C categories represented as extensions.
                 add("REDUNDANT_NULLABLE") // This warning appears due to Obj-C typedef nullability incomplete support.
                 add("DEPRECATION") // For uncheckedCast.
+                add("DEPRECATION_ERROR") // For initializers.
             }
         }
 
@@ -903,7 +913,8 @@ class StubGenerator(
             out("")
         }
         if (platform == KotlinPlatform.NATIVE) {
-            out("import konan.SymbolName")
+            out("import kotlin.native.SymbolName")
+            out("import kotlinx.cinterop.internal.*")
         }
         out("import kotlinx.cinterop.*")
 
@@ -940,6 +951,7 @@ class StubGenerator(
     val libraryForCStubs = configuration.library.copy(
             includes = mutableListOf<String>().apply {
                 add("stdint.h")
+                add("string.h")
                 if (platform == KotlinPlatform.JVM) {
                     add("jni.h")
                 }
@@ -1026,6 +1038,6 @@ class StubGenerator(
             MappingBridgeGeneratorImpl(declarationMapper, simpleBridgeGenerator)
 
     companion object {
-        private val VALID_PACKAGE_NAME_REGEX = "[a-zA-Z1-9_.]".toRegex()
+        private val VALID_PACKAGE_NAME_REGEX = "[a-zA-Z0-9_.]+".toRegex()
     }
 }

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package kotlin.test.tests
 
 import kotlin.test.*
@@ -158,6 +163,24 @@ class BasicAssertionsTest {
     fun testExpectFails() {
         checkFailedAssertion { expect(1) { 2 } }
     }
+
+    @Test
+    fun testContracts() {
+        open class S
+        class P(val str: String = "P") : S()
+
+        val s: S = P()
+        val p: Any = P("A")
+
+        assertTrue(s is P)
+        assertEquals("P", s.str)
+        assertFalse(p !is P)
+        assertEquals("A", p.str)
+
+        val nullableT: P? = P("N")
+        assertNotNull(nullableT)
+        assertEquals("N", nullableT.str)
+    }
 }
 
 
@@ -167,11 +190,5 @@ private fun checkFailedAssertion(assertion: () -> Unit) {
 
 @Suppress("INVISIBLE_MEMBER")
 private fun withDefaultAsserter(block: () -> Unit) {
-    val current = overrideAsserter(DefaultAsserter)
-    try {
-        block()
-    }
-    finally {
-        overrideAsserter(current)
-    }
+    block()
 }

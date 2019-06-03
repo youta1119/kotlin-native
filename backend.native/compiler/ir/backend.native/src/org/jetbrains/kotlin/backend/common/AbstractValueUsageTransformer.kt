@@ -1,32 +1,21 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.common
 
+import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
-import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.ir.IrStatement
-import org.jetbrains.kotlin.ir.declarations.IrField
-import org.jetbrains.kotlin.ir.declarations.IrFunction
-import org.jetbrains.kotlin.ir.declarations.IrVariable
-import org.jetbrains.kotlin.ir.declarations.getDefault
+import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
 import org.jetbrains.kotlin.ir.expressions.*
+import org.jetbrains.kotlin.ir.symbols.*
+import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
-import org.jetbrains.kotlin.types.KotlinType
 
 
 /**
@@ -40,45 +29,65 @@ import org.jetbrains.kotlin.types.KotlinType
  *
  * TODO: consider making this visitor non-recursive to make it more general.
  */
-abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrElementTransformerVoid() {
+internal abstract class AbstractValueUsageTransformer(
+        val builtIns: KotlinBuiltIns,
+        val symbols: KonanSymbols,
+        val irBuiltIns: IrBuiltIns
+): IrElementTransformerVoid() {
 
-    protected open fun IrExpression.useAs(type: KotlinType): IrExpression = this
+    protected open fun IrExpression.useAs(type: IrType): IrExpression = this
 
     protected open fun IrExpression.useAsStatement(): IrExpression = this
 
-    protected open fun IrExpression.useInTypeOperator(operator: IrTypeOperator, typeOperand: KotlinType): IrExpression =
+    protected open fun IrExpression.useInTypeOperator(operator: IrTypeOperator, typeOperand: IrType): IrExpression =
             this
 
-    protected open fun IrExpression.useAsValue(value: ValueDescriptor): IrExpression = this.useAs(value.type)
+    protected open fun IrExpression.useAsValue(value: IrValueDeclaration): IrExpression = this.useAs(value.type)
 
-    protected open fun IrExpression.useAsArgument(parameter: ParameterDescriptor): IrExpression =
+    protected open fun IrExpression.useAsArgument(parameter: IrValueParameter): IrExpression =
             this.useAsValue(parameter)
 
-    protected open fun IrExpression.useAsDispatchReceiver(expression: IrMemberAccessExpression): IrExpression =
-            this.useAsArgument(expression.descriptor.dispatchReceiverParameter!!)
+    protected open fun IrExpression.useAsDispatchReceiver(expression: IrFunctionAccessExpression): IrExpression =
+            this.useAsArgument(expression.symbol.owner.dispatchReceiverParameter!!)
 
-    protected open fun IrExpression.useAsExtensionReceiver(expression: IrMemberAccessExpression): IrExpression =
-            this.useAsArgument(expression.descriptor.extensionReceiverParameter!!)
+    protected open fun IrExpression.useAsExtensionReceiver(expression: IrFunctionAccessExpression): IrExpression =
+            this.useAsArgument(expression.symbol.owner.extensionReceiverParameter!!)
 
-    protected open fun IrExpression.useAsValueArgument(expression: IrMemberAccessExpression,
-                                                       parameter: ValueParameterDescriptor): IrExpression =
+    protected open fun IrExpression.useAsValueArgument(expression: IrFunctionAccessExpression,
+                                                       parameter: IrValueParameter
+    ): IrExpression =
             this.useAsArgument(parameter)
 
-    protected open fun IrExpression.useForVariable(variable: VariableDescriptor): IrExpression =
+    private fun IrExpression.useForVariable(variable: IrVariable): IrExpression =
             this.useAsValue(variable)
 
-    protected open fun IrExpression.useForField(field: PropertyDescriptor): IrExpression =
-            this.useForVariable(field)
+    private fun IrExpression.useForField(field: IrField): IrExpression =
+            this.useAs(field.type)
 
-    protected open fun IrExpression.useAsReturnValue(returnTarget: CallableDescriptor): IrExpression {
-        val returnType = returnTarget.returnType ?: return this
-        return this.useAs(returnType)
-    }
+    protected open fun IrExpression.useAsReturnValue(returnTarget: IrReturnTargetSymbol): IrExpression =
+            when (returnTarget) {
+                is IrSimpleFunctionSymbol -> this.useAs(returnTarget.owner.returnType)
+                is IrConstructorSymbol -> this.useAs(irBuiltIns.unitType)
+                is IrReturnableBlockSymbol -> this.useAs(returnTarget.owner.type)
+                else -> error(returnTarget)
+            }
 
     protected open fun IrExpression.useAsResult(enclosing: IrExpression): IrExpression =
             this.useAs(enclosing.type)
 
-    override fun visitMemberAccess(expression: IrMemberAccessExpression): IrExpression {
+    override fun visitPropertyReference(expression: IrPropertyReference): IrExpression {
+        TODO()
+    }
+
+    override fun visitLocalDelegatedPropertyReference(expression: IrLocalDelegatedPropertyReference): IrExpression {
+        TODO()
+    }
+
+    override fun visitFunctionReference(expression: IrFunctionReference): IrExpression {
+        TODO()
+    }
+
+    override fun visitFunctionAccess(expression: IrFunctionAccessExpression): IrExpression {
         expression.transformChildrenVoid(this)
 
         with(expression) {
@@ -86,7 +95,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
             extensionReceiver = extensionReceiver?.useAsExtensionReceiver(expression)
             for (index in descriptor.valueParameters.indices) {
                 val argument = getValueArgument(index) ?: continue
-                val parameter = descriptor.valueParameters[index]
+                val parameter = symbol.owner.valueParameters[index]
                 putValueArgument(index, argument.useAsValueArgument(expression, parameter))
             }
         }
@@ -130,7 +139,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitReturn(expression: IrReturn): IrExpression {
         expression.transformChildrenVoid(this)
 
-        expression.value = expression.value.useAsReturnValue(expression.returnTarget)
+        expression.value = expression.value.useAsReturnValue(expression.returnTargetSymbol)
 
         return expression
     }
@@ -138,7 +147,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitSetVariable(expression: IrSetVariable): IrExpression {
         expression.transformChildrenVoid(this)
 
-        expression.value = expression.value.useForVariable(expression.descriptor)
+        expression.value = expression.value.useForVariable(expression.symbol.owner)
 
         return expression
     }
@@ -146,7 +155,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitSetField(expression: IrSetField): IrExpression {
         expression.transformChildrenVoid(this)
 
-        expression.value = expression.value.useForField(expression.descriptor)
+        expression.value = expression.value.useForField(expression.symbol.owner)
 
         return expression
     }
@@ -155,7 +164,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
         declaration.transformChildrenVoid(this)
 
         declaration.initializer?.let {
-            it.expression = it.expression.useForField(declaration.descriptor)
+            it.expression = it.expression.useForField(declaration)
         }
 
         return declaration
@@ -164,7 +173,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitVariable(declaration: IrVariable): IrVariable {
         declaration.transformChildrenVoid(this)
 
-        declaration.initializer = declaration.initializer?.useForVariable(declaration.descriptor)
+        declaration.initializer = declaration.initializer?.useForVariable(declaration)
 
         return declaration
     }
@@ -173,7 +182,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
         expression.transformChildrenVoid(this)
 
         for (irBranch in expression.branches) {
-            irBranch.condition = irBranch.condition.useAs(builtIns.booleanType)
+            irBranch.condition = irBranch.condition.useAs(irBuiltIns.booleanType)
             irBranch.result = irBranch.result.useAsResult(expression)
         }
 
@@ -183,7 +192,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitLoop(loop: IrLoop): IrExpression {
         loop.transformChildrenVoid(this)
 
-        loop.condition = loop.condition.useAs(builtIns.booleanType)
+        loop.condition = loop.condition.useAs(irBuiltIns.booleanType)
 
         loop.body = loop.body?.useAsStatement()
 
@@ -193,7 +202,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitThrow(expression: IrThrow): IrExpression {
         expression.transformChildrenVoid(this)
 
-        expression.value = expression.value.useAs(builtIns.throwable.defaultType)
+        expression.value = expression.value.useAs(symbols.throwable.owner.defaultType)
 
         return expression
     }
@@ -238,8 +247,8 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
     override fun visitFunction(declaration: IrFunction): IrStatement {
         declaration.transformChildrenVoid(this)
 
-        declaration.descriptor.valueParameters.forEach { parameter ->
-            val defaultValue = declaration.getDefault(parameter)
+        declaration.valueParameters.forEach { parameter ->
+            val defaultValue = parameter.defaultValue
             if (defaultValue is IrExpressionBody) {
                 defaultValue.expression = defaultValue.expression.useAsArgument(parameter)
             }
@@ -247,7 +256,7 @@ abstract class AbstractValueUsageTransformer(val builtIns: KotlinBuiltIns): IrEl
 
         declaration.body?.let {
             if (it is IrExpressionBody) {
-                it.expression = it.expression.useAsReturnValue(declaration.descriptor)
+                it.expression = it.expression.useAsReturnValue(declaration.symbol)
             }
         }
 

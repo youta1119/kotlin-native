@@ -1,3 +1,83 @@
+# v1.2.0 (Apr 2019)
+  * New intermediate representation based library format allowing global optimizations
+  * Exception backtraces in debug mode on macOS and iOS targets contains symbolic information
+  * Support for 32-bit Windows targets (target mingw_x86)
+  * Support for cross-compilation to Linux (x86-64 and arm32) from macOS and Windows hosts
+  * Static Apple frameworks can be produced
+  * Support Gradle 5.1
+  * Fix alignment-related issues on ARM32 and MIPS platforms
+  * Write unhandled exceptions stacktrace on device to iOS crash log
+  * Fix undefined behavior in some arithmetic operations
+  * Interop:
+    * Get rid of libffi dependency
+    * Support returning struct from C callbacks
+    * Support passing Kotlin strings to C interop functions accepting UTF-32 arguments
+    * Fix bool conversion
+    * Support variable length arrays
+    * Provide Kotlin access to C compiler intrinsics via platform.builtins package
+    * Support clang modules (for Objective-C only)
+    * Experimental integration with CocoaPods
+  * IDE
+    * Kotlin/Native plugin is supported in CLion 2018.3 and AppCode/CLion 2019.1
+    * Basic highlighting support for .def files
+    * Navigation to source files from exception backtrace
+
+## v1.1.0 (Dec 2018)
+  * Performance optimizations:
+    * runtime: optimization of queue of finalization
+    * compiler: loop generation optimization
+	* compiler: reduce RTTI size
+	* runtime: reduce size of the object header
+  * Contracts support
+  * Regex engine: fix quantifier processing
+
+## v0.9.3 (Sep 2018)
+  * Bugfixes
+
+## v0.9.2 (Sep 2018)
+  * Support Xcode 10.0
+  * iOS 9.0 is the minimal supported version for all targets
+  * Swift interop improvements
+  * Support shared top level values of some immutable types (i.e. String and atomic references)
+  * Support release Kotlin 1.3.0
+
+## v0.9.1 (Sep 2018)
+  * Improve naming in produced Objective-C frameworks. Use ‘Kotlin’ prefix instead of ‘Stdlib’ prefix.
+  * Improvements in KLIB: Library versioning, IDEA-friendly internal format.
+
+# v0.9 (Sep 2018)
+  * Support Kotlin 1.3M2
+    * Note: Common modules of multiplatform projects also should use Kotlin 1.3
+  * Major standard library (native parts) rework and rename
+  * New Gradle plugin with multiplatform integration and reworked DSL
+  * Support unsigned types in Kotlin and interop
+  * Support non-experimental coroutines API (kotlin.coroutines)
+  * Top level object var/val can only be accessed from the main thread
+  * Support lazy properties in singleton objects
+  * Update LLVM to 6.0.1
+
+## v0.8 (Jul 2018)
+  * Singleton objects are frozen after creation, and shared between threads
+  * String and primitives types are frozen by default
+  * Common stdlib with Kotlin/JVM and Kotlin/JS
+  * Implemented `kotlin.random.*` and `Collection.shuffle`
+  * Implemented atomic integers and atomic references
+  * Multiple bugfixes in compiler (coroutines, inliner)
+  * Support 32-bit iOS (target `ios_arm32`)
+  * New experimental Gradle plugin
+  * Support Xcode 9.4.1
+  * Optimizations (switch by enum, memory management)
+
+## v0.7.1 (Jun 2018)
+  * Bugfixes in the runtime (indexOf, GC for kotlin.Array, enum equality) and the compiler
+  * Fix NSBlock problem, preventing upload of binaries to the AppStore
+  * Create primitive type boxes and kotlin.String as frozen by default
+  * Support Gradle 4.7, provide separate run task for each executable
+  * Support Xcode 9.4 and CoreML and ClassKit frameworks on Apple platforms
+  * Improved runtime Kotlin variable examination
+  * Minor performance optimizations in compiled code and runtime
+  * Add `disableDesignatedInitializerChecks` definition file support
+
 ## v0.7 (May 2018)
   * Interop with Objective-C/Swift changes:
      * Uniform direct and reverse interops (values could be passed in both directions now)

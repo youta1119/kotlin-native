@@ -16,7 +16,8 @@
 
 package kotlinx.wasm.jsinterop
 
-import konan.internal.ExportForCppRuntime
+import kotlin.native.*
+import kotlin.native.internal.ExportForCppRuntime
 import kotlinx.cinterop.*
 
 typealias Arena = Int
@@ -24,19 +25,17 @@ typealias Object = Int
 typealias Pointer = Int
 
 /**
- * Used annotation is required to preserve functions
- * from internalization and DCE
+ * @Retain annotation is required to preserve functions from internalization and DCE.
  */
-
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_allocateArena")
 external public fun allocateArena(): Arena
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_freeArena")
 external public fun freeArena(arena: Arena)
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_pushIntToArena")
 external public fun pushIntToArena(arena: Arena, value: Int)
 
@@ -50,15 +49,15 @@ fun doubleUpper(value: Double): Int =
 fun doubleLower(value: Double): Int =
     (value.toBits() and 0x00000000ffffffff) .toInt()
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("ReturnSlot_getDouble")
 external public fun ReturnSlot_getDouble(): Double
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Kotlin_String_utf16pointer")
 external public fun stringPointer(message: String): Pointer
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Kotlin_String_utf16length")
 external public fun stringLengthBytes(message: String): Int
 
@@ -69,7 +68,7 @@ fun <R> wrapFunction(func: KtFunction<R>): Int {
     return ptr.toInt() // TODO: LP64 unsafe.
 }
 
-@Used
+@RetainForTarget("wasm32")
 @ExportForCppRuntime("Konan_js_runLambda")
 fun runLambda(pointer: Int, argumentsArena: Arena, argumentsArenaSize: Int): Int {
     val arguments = arrayListOf<JsValue>()
@@ -105,19 +104,19 @@ open class JsArray(arena: Arena, index: Object): JsValue(arena, index) {
         get() = this.getInt("length")
 }
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_getInt")
 external public fun getInt(arena: Arena, obj: Object, propertyPtr: Pointer, propertyLen: Int): Int;
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_getProperty")
 external public fun Konan_js_getProperty(arena: Arena, obj: Object, propertyPtr: Pointer, propertyLen: Int): Int;
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_setFunction")
 external public fun setFunction(arena: Arena, obj: Object, propertyName: Pointer, propertyLength: Int , function: Int)
 
-@Used
+@RetainForTarget("wasm32")
 @SymbolName("Konan_js_setString")
 external public fun setString(arena: Arena, obj: Object, propertyName: Pointer, propertyLength: Int, stringPtr: Pointer, stringLength: Int )
 

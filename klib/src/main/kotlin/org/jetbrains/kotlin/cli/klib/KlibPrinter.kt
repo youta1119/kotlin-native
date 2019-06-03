@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2018 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.cli.klib
@@ -34,7 +23,8 @@ class KlibPrinter(out: Appendable) {
         get() = kind == CallableMemberDescriptor.Kind.FAKE_OVERRIDE
 
     val DeclarationDescriptor.shouldBePrinted: Boolean
-        get() = this is ClassDescriptor && isPublicOrProtected || this is CallableMemberDescriptor && isPublicOrProtected && !isFakeOverride
+        get() = this is ClassifierDescriptorWithTypeParameters && isPublicOrProtected
+                || this is CallableMemberDescriptor && isPublicOrProtected && !isFakeOverride
 
     private fun Printer.printBody(header: CharSequence, block: () -> Unit) {
         println()
@@ -46,7 +36,7 @@ class KlibPrinter(out: Appendable) {
         println()
     }
 
-    private fun ClassDescriptor.render(): String {
+    private fun ClassifierDescriptorWithTypeParameters.render(): String {
         val renderer = when (modality) {
             // Don't render 'final' modality
             Modality.FINAL -> Renderers.WITHOUT_MODALITY
@@ -140,6 +130,10 @@ class KlibPrinter(out: Appendable) {
         }
 
         override fun visitConstructorDescriptor(descriptor: ConstructorDescriptor, data: Unit) {
+            printer.println(descriptor.render())
+        }
+
+        override fun visitTypeAliasDescriptor(descriptor: TypeAliasDescriptor, data: Unit) {
             printer.println(descriptor.render())
         }
     }

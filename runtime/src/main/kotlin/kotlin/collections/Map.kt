@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.collections
@@ -21,8 +10,9 @@ package kotlin.collections
  * the value corresponding to each key. Map keys are unique; the map holds only one value for each key.
  * Methods in this interface support only read-only access to the map; read-write access is supported through
  * the [MutableMap] interface.
- * @param K the type of map keys.
- * @param V the type of map values.
+ * @param K the type of map keys. The map is invariant on its key type, as it
+ *          can accept key as a parameter (of [containsKey] for example) and return it in [keys] set.
+ * @param V the type of map values. The map is covariant on its value type.
  */
 public interface Map<K, out V> {
     // Query Operations
@@ -53,17 +43,17 @@ public interface Map<K, out V> {
 
     // Views
     /**
-     * Returns a [Set] of all keys in this map.
+     * Returns a read-only [Set] of all keys in this map.
      */
     public val keys: Set<K>
 
     /**
-     * Returns a [Collection] of all values in this map. Note that this collection may contain duplicate values.
+     * Returns a read-only [Collection] of all values in this map. Note that this collection may contain duplicate values.
      */
     public val values: Collection<V>
 
     /**
-     * Returns a [Set] of all key/value pairs in this map.
+     * Returns a read-only [Set] of all key/value pairs in this map.
      */
     public val entries: Set<Map.Entry<K, V>>
 
@@ -86,8 +76,8 @@ public interface Map<K, out V> {
 /**
  * A modifiable collection that holds pairs of objects (keys and values) and supports efficiently retrieving
  * the value corresponding to each key. Map keys are unique; the map holds only one value for each key.
- * @param K the type of map keys.
- * @param V the type of map values.
+ * @param K the type of map keys. The map is invariant on its key type.
+ * @param V the type of map values. The mutable map is invariant on its value type.
  */
 public interface MutableMap<K, V> : Map<K, V> {
     // Modification Operations
@@ -117,14 +107,25 @@ public interface MutableMap<K, V> : Map<K, V> {
     public fun clear(): Unit
 
     // Views
+    /**
+     * Returns a [MutableSet] of all keys in this map.
+     */
     override val keys: MutableSet<K>
+
+    /**
+     * Returns a [MutableCollection] of all values in this map. Note that this collection may contain duplicate values.
+     */
     override val values: MutableCollection<V>
+
+    /**
+     * Returns a [MutableSet] of all key/value pairs in this map.
+     */
     override val entries: MutableSet<MutableMap.MutableEntry<K, V>>
 
     /**
      * Represents a key/value pair held by a [MutableMap].
      */
-    public interface MutableEntry<K,V>: Map.Entry<K, V> {
+    public interface MutableEntry<K, V> : Map.Entry<K, V> {
         /**
          * Changes the value associated with the key of this entry.
          *

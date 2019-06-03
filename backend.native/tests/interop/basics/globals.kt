@@ -1,3 +1,8 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import kotlinx.cinterop.*
 import cglobals.*
 
@@ -22,4 +27,7 @@ fun main(args: Array<String>) {
     assert(g5[0] == 16)
 
     assert(g6 == g3.ptr)
+
+    assert(g8.toLong() == 0x1L)
+    assert(g9.toLong() == 0x2L)
 }

@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.test
@@ -19,45 +8,40 @@ package kotlin.test
 /**
  * Marks a function as a test.
  */
-@Retention(AnnotationRetention.SOURCE)
 @Target(AnnotationTarget.FUNCTION)
-annotation class Test
+public actual annotation class Test
 
 /**
  * Marks a function to be executed before a suite. Not supported in Kotlin/Common.
  */
-@Retention(AnnotationRetention.SOURCE)
 @Target(AnnotationTarget.FUNCTION)
-annotation class BeforeClass
+public annotation class BeforeClass
 
 /**
  * Marks a function to be executed after a suite. Not supported in Kotlin/Common.
  */
-@Retention(AnnotationRetention.SOURCE)
 @Target(AnnotationTarget.FUNCTION)
-annotation class AfterClass
+public annotation class AfterClass
 
 /**
- * Marks a function to be executed before a test.
+ * Marks a function to be invoked before each test.
  */
-@Retention(AnnotationRetention.SOURCE)
 @Target(AnnotationTarget.FUNCTION)
-annotation class BeforeEach
-
+public actual annotation class BeforeTest
 
 /**
- * Marks a function to be executed after a test.
+ * Marks a function to be invoked after each test.
  */
-@Retention(AnnotationRetention.SOURCE)
 @Target(AnnotationTarget.FUNCTION)
-annotation class AfterEach
+public actual annotation class AfterTest
 
 /**
- * Marks a test or a suite as ignored/pending.
+ * Marks a test or a suite as ignored.
  */
-@Retention(AnnotationRetention.SOURCE)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
-annotation class Ignore
+public actual annotation class Ignore
 
-typealias AfterTest = AfterEach
-typealias BeforeTest = BeforeEach
+@Deprecated("AfterEach should be replaced with AfterTest to unify usage of kotlin.test")
+public typealias AfterEach = AfterTest
+@Deprecated("BeforeEach should be replaced with BeforeTest to unify usage of kotlin.test")
+public typealias BeforeEach = BeforeTest

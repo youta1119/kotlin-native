@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.cli.bc
@@ -20,24 +9,34 @@ import com.intellij.openapi.Disposable
 import org.jetbrains.annotations.NotNull
 import org.jetbrains.annotations.Nullable
 import org.jetbrains.kotlin.backend.konan.*
-import org.jetbrains.kotlin.backend.konan.util.profile
-import org.jetbrains.kotlin.cli.common.CLICompiler
-import org.jetbrains.kotlin.cli.common.CLITool
-import org.jetbrains.kotlin.cli.common.ExitCode
+import org.jetbrains.kotlin.cli.common.*
+import org.jetbrains.kotlin.cli.common.config.addKotlinSourceRoot
+import org.jetbrains.kotlin.cli.common.config.kotlinSourceRoots
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.*
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
+import org.jetbrains.kotlin.cli.jvm.plugins.PluginCliParser
+import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.Services
-import org.jetbrains.kotlin.config.addKotlinSourceRoots
-import org.jetbrains.kotlin.config.kotlinSourceRoots
+import org.jetbrains.kotlin.konan.CURRENT
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
+import org.jetbrains.kotlin.konan.util.*
+import org.jetbrains.kotlin.metadata.deserialization.BinaryVersion
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.utils.KotlinPaths
+import org.jetbrains.kotlin.serialization.konan.KonanMetadataVersion
 
+private class K2NativeCompilerPerformanceManager: CommonCompilerPerformanceManager("Kotlin to Native Compiler")
 class K2Native : CLICompiler<K2NativeCompilerArguments>() {
+    override fun createMetadataVersion(versionArray: IntArray): BinaryVersion = KonanMetadataVersion(*versionArray)
+
+    override val performanceManager:CommonCompilerPerformanceManager by lazy {
+        K2NativeCompilerPerformanceManager()
+    }
 
     override fun doExecute(@NotNull arguments: K2NativeCompilerArguments,
                            @NotNull configuration: CompilerConfiguration,
@@ -49,14 +48,26 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
             return ExitCode.OK
         }
 
+        val pluginLoadResult =
+            PluginCliParser.loadPluginsSafe(arguments.pluginClasspaths, arguments.pluginOptions, configuration)
+        if (pluginLoadResult != ExitCode.OK) return pluginLoadResult
+
         val environment = KotlinCoreEnvironment.createForProduction(rootDisposable,
             configuration, EnvironmentConfigFiles.NATIVE_CONFIG_FILES)
         val project = environment.project
+        val messageCollector = configuration.get(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY) ?: MessageCollector.NONE
+        configuration.put(CLIConfigurationKeys.PHASE_CONFIG, createPhaseConfig(toplevelPhase, arguments, messageCollector))
         val konanConfig = KonanConfig(project, configuration)
 
         val enoughArguments = arguments.freeArgs.isNotEmpty() || arguments.isUsefulWithoutFreeArgs
         if (!enoughArguments) {
             configuration.report(ERROR, "You have not specified any compilation arguments. No output has been produced.")
+        }
+
+        /* Set default version of metadata version */
+        val metadataVersionString = arguments.metadataVersion
+        if (metadataVersionString == null) {
+            configuration.put(CommonConfigurationKeys.METADATA_VERSION, KonanMetadataVersion.INSTANCE)
         }
 
         if (konanConfig.linkOnly) {
@@ -96,7 +107,10 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
             arguments    : K2NativeCompilerArguments,
             services     : Services) {
 
-        configuration.addKotlinSourceRoots(arguments.freeArgs)
+        val commonSources = arguments.commonSources?.toSet().orEmpty()
+        arguments.freeArgs.forEach {
+            configuration.addKotlinSourceRoot(it, it in commonSources)
+        }
 
         with(KonanConfigKeys) {
             with(configuration) {
@@ -107,8 +121,8 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(NOMAIN, arguments.nomain)
                 put(LIBRARY_FILES,
                         arguments.libraries.toNonNullList())
-
-                put(LINKER_ARGS, arguments.linkerArguments.toNonNullList())
+                put(LINKER_ARGS, arguments.linkerArguments.toNonNullList() +
+                        arguments.singleLinkerArguments.toNonNullList())
                 arguments.moduleName ?. let{ put(MODULE_NAME, it) }
                 arguments.target ?.let{ put(TARGET, it) }
 
@@ -122,11 +136,11 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 // TODO: Collect all the explicit file names into an object
                 // and teach the compiler to work with temporaries and -save-temps.
 
-                arguments.outputName ?.let { put(OUTPUT, it) } 
+                arguments.outputName ?.let { put(OUTPUT, it) }
                 val outputKind = CompilerOutputKind.valueOf(
                     (arguments.produce ?: "program").toUpperCase())
                 put(PRODUCE, outputKind)
-                put(ABI_VERSION, 1)
+                arguments.libraryVersion ?. let { put(LIBRARY_VERSION, it) }
 
                 arguments.mainPackage ?.let{ put(ENTRY, it) }
                 arguments.manifestFile ?.let{ put(MANIFEST_FILE, it) }
@@ -136,6 +150,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(LIST_TARGETS, arguments.listTargets)
                 put(OPTIMIZATION, arguments.optimization)
                 put(DEBUG, arguments.debug)
+                put(STATIC_FRAMEWORK, selectFrameworkType(configuration, arguments, outputKind))
 
                 put(PRINT_IR, arguments.printIr)
                 put(PRINT_IR_WITH_DESCRIPTORS, arguments.printIrWithDescriptors)
@@ -156,24 +171,43 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(VERBOSE_PHASES,
                         arguments.verbosePhases.toNonNullList())
                 put(LIST_PHASES, arguments.listPhases)
-                put(TIME_PHASES, arguments.timePhases)
+
+                put(COMPATIBLE_COMPILER_VERSIONS,
+                    arguments.compatibleCompilerVersions.toNonNullList())
 
                 put(ENABLE_ASSERTIONS, arguments.enableAssertions)
 
-                put(GENERATE_TEST_RUNNER, arguments.generateTestRunner)
-
+                when {
+                    arguments.generateWorkerTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.WORKER)
+                    arguments.generateTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.MAIN_THREAD)
+                    arguments.generateNoExitTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.MAIN_THREAD_NO_EXIT)
+                    else -> put(GENERATE_TEST_RUNNER, TestRunnerKind.NONE)
+                }
                 // We need to download dependencies only if we use them ( = there are files to compile).
                 put(CHECK_DEPENDENCIES, if (configuration.kotlinSourceRoots.isNotEmpty()) {
-                        true
-                    } else {
-                        arguments.checkDependencies
-                    })
+                    true
+                } else {
+                    arguments.checkDependencies
+                })
+                if (arguments.friendModules != null)
+                    put(FRIEND_MODULES, arguments.friendModules!!.split(File.pathSeparator).filterNot(String::isEmpty))
+
+                put(EXPORTED_LIBRARIES, selectExportedLibraries(configuration, arguments, outputKind))
+                put(FRAMEWORK_IMPORT_HEADERS, arguments.frameworkImportHeaders.toNonNullList())
+                arguments.emitLazyObjCHeader?.let { put(EMIT_LAZY_OBJC_HEADER_FILE, it) }
+
+                put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
+                put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
+                put(COVERAGE, arguments.coverage)
+                put(LIBRARIES_TO_COVER, arguments.coveredLibraries.toNonNullList())
+                arguments.coverageFile?.let { put(PROFRAW_PATH, it) }
+                put(OBJC_GENERICS, arguments.objcGenerics)
             }
         }
     }
 
     override fun createArguments(): K2NativeCompilerArguments {
-        return K2NativeCompilerArguments().apply { coroutinesState = "enable" }
+        return K2NativeCompilerArguments()
     }
 
     override fun executableScriptFileName() = "kotlinc-native"
@@ -181,16 +215,86 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
     companion object {
         @JvmStatic fun main(args: Array<String>) {
             profile("Total compiler main()") {
-                val options = args.flatMap {
-                    if (it.startsWith('@')) {
-                        File(it.substring(1)).readStrings()
-                    }
-                    else listOf(it)
-                }
-                CLITool.doMain(K2Native(), options.toTypedArray())
+                CLITool.doMain(K2Native(), args)
             }
         }
     }
 }
+
+private fun selectFrameworkType(
+    configuration: CompilerConfiguration,
+    arguments: K2NativeCompilerArguments,
+    outputKind: CompilerOutputKind
+): Boolean {
+    return if (outputKind != CompilerOutputKind.FRAMEWORK && arguments.staticFramework) {
+        configuration.report(
+            STRONG_WARNING,
+            "'$STATIC_FRAMEWORK_FLAG' is only supported when producing frameworks, " +
+            "but the compiler is producing ${outputKind.name.toLowerCase()}"
+        )
+        false
+    } else {
+       arguments.staticFramework
+    }
+}
+
+private fun selectBitcodeEmbeddingMode(
+        configuration: CompilerConfiguration,
+        arguments: K2NativeCompilerArguments,
+        outputKind: CompilerOutputKind
+): BitcodeEmbedding.Mode {
+
+    if (outputKind != CompilerOutputKind.FRAMEWORK) {
+        return BitcodeEmbedding.Mode.NONE.also {
+            val flag = when {
+                arguments.embedBitcodeMarker -> EMBED_BITCODE_MARKER_FLAG
+                arguments.embedBitcode -> EMBED_BITCODE_FLAG
+                else -> return@also
+            }
+
+            configuration.report(
+                    STRONG_WARNING,
+                    "'$flag' is only supported when producing frameworks, " +
+                            "but the compiler is producing ${outputKind.name.toLowerCase()}"
+            )
+        }
+    }
+
+    return when {
+        arguments.embedBitcodeMarker -> {
+            if (arguments.embedBitcode) {
+                configuration.report(
+                        STRONG_WARNING,
+                        "'$EMBED_BITCODE_FLAG' is ignored because '$EMBED_BITCODE_MARKER_FLAG' is specified"
+                )
+            }
+            BitcodeEmbedding.Mode.MARKER
+        }
+        arguments.embedBitcode -> {
+            BitcodeEmbedding.Mode.FULL
+        }
+        else -> BitcodeEmbedding.Mode.NONE
+    }
+}
+
+private fun selectExportedLibraries(
+        configuration: CompilerConfiguration,
+        arguments: K2NativeCompilerArguments,
+        outputKind: CompilerOutputKind
+): List<String> {
+    val exportedLibraries = arguments.exportedLibraries?.toList().orEmpty()
+
+    return if (exportedLibraries.isNotEmpty() && outputKind != CompilerOutputKind.FRAMEWORK &&
+            outputKind != CompilerOutputKind.STATIC && outputKind != CompilerOutputKind.DYNAMIC) {
+        configuration.report(STRONG_WARNING,
+                "-Xexport-library is only supported when producing frameworks or native libraries, " +
+                "but the compiler is producing ${outputKind.name.toLowerCase()}")
+
+        emptyList()
+    } else {
+        exportedLibraries
+    }
+}
+
 fun main(args: Array<String>) = K2Native.main(args)
 

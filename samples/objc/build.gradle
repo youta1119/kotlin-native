@@ -1,7 +1,17 @@
-apply plugin: 'konan'
-
-konan.targets = ['macbook']
-
-konanArtifacts {
-    program('Window')
+plugins {
+    id 'kotlin-multiplatform'
 }
+
+// Determine host preset.
+def hostPreset = MPPTools.defaultHostPreset(project, [kotlin.presets.macosX64])
+
+kotlin {
+    targets {
+        fromPreset(hostPreset, 'objc') {
+            compilations.main.outputKinds 'EXECUTABLE'
+            compilations.main.entryPoint 'sample.objc.main'
+        }
+    }
+}
+
+MPPTools.createRunTask(project, 'runProgram', kotlin.targets.objc)

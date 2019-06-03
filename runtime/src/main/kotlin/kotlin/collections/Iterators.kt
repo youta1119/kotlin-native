@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package kotlin.collections
@@ -78,32 +67,4 @@ public abstract class BooleanIterator : Iterator<Boolean> {
 
     /** Returns the next value in the sequence without boxing. */
     public abstract fun nextBoolean(): Boolean
-}
-
-/**
- * Returns the given iterator itself. This allows to use an instance of iterator in a `for` loop.
- */
-@kotlin.internal.InlineOnly
-public inline operator fun <T> Iterator<T>.iterator(): Iterator<T> = this
-
-/**
- * Returns an [Iterator] wrapping each value produced by this [Iterator] with the [IndexedValue],
- * containing value and it's index.
- */
-public fun <T> Iterator<T>.withIndex(): Iterator<IndexedValue<T>> = IndexingIterator(this)
-
-/**
- * Performs the given [operation] on each element of this [Iterator].
- */
-public inline fun <T> Iterator<T>.forEach(operation: (T) -> Unit) : Unit {
-    for (element in this) operation(element)
-}
-
-/**
- * Iterator transforming original `iterator` into iterator of [IndexedValue], counting index from zero.
- */
-internal class IndexingIterator<out T>(private val iterator: Iterator<T>) : Iterator<IndexedValue<T>> {
-    private var index = 0
-    final override fun hasNext(): Boolean = iterator.hasNext()
-    final override fun next(): IndexedValue<T> = IndexedValue(index++, iterator.next())
 }

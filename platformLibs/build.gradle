@@ -1,6 +1,5 @@
 import org.jetbrains.kotlin.KlibInstall
 import org.jetbrains.kotlin.konan.target.*
-import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.util.*
 
 import static org.jetbrains.kotlin.konan.util.VisibleNamedKt.getVisibleName
@@ -9,9 +8,11 @@ apply plugin: 'konan'
 
 buildscript {
     repositories {
-        mavenCentral()
         maven {
-            url kotlinCompilerRepo
+            url 'https://cache-redirector.jetbrains.com/maven-central'
+        }
+        maven {
+            url buildKotlinCompilerRepo
         }
     }
 
@@ -20,8 +21,9 @@ buildscript {
     }
 
     ext.konanHome = distDir.absolutePath
-    ext.jvmArgs = project.findProperty("platformLibsJvmArgs") ?: "-Xmx4G"
-    ext.setProperty("konan.home", konanHome)
+    def jvmArguments = [project.findProperty("platformLibsJvmArgs") ?: "-Xmx6G", *HostManager.defaultJvmArgs]
+    ext.jvmArgs = jvmArguments.join(" ")
+    ext.setProperty("org.jetbrains.kotlin.native.home", konanHome)
     ext.setProperty("konan.jvmArgs", jvmArgs)
 }
 
@@ -30,12 +32,11 @@ private ArrayList<DefFile> targetDefFiles(KonanTarget  target) {
     file("src/platform/${getVisibleName(target.family)}")
             .listFiles()
             .findAll { it.name.endsWith(".def") }
-            // The libz.a/libz.so and zlib.h are missing in raspberrypi and mips sysroots.
+            // The libz.a/libz.so and zlib.h are missing in MIPS sysroots.
             // Just workaround it until we have sysroots corrected.
-            .findAll { ! ((target instanceof KonanTarget.LINUX_ARM32_HFP ||
-                           target instanceof KonanTarget.LINUX_MIPS32 || 
+            .findAll { ! ((target instanceof KonanTarget.LINUX_MIPS32 ||
                            target instanceof KonanTarget.LINUX_MIPSEL32) && it.name == 'zlib.def') }
-            .collect { TargetDefFileKt.DefFile(it, target) }
+            .collect { DefFileKt.DefFile(it, target) }
 }
 
 private String defFileToLibName(String target, String name) {
@@ -62,13 +63,14 @@ project.rootProject.ext.platformManager.enabled.each { target ->
                 libraries {
                     klibs df.config.depends
                 }
-                extraOpts '--purge_user_libs'
+                extraOpts '-Xpurge-user-libs'
             }
         }
 
         def libTask = konanArtifacts."$libName"."$targetName"
         libTask.dependsOn df.config.depends.collect{ defFileToLibName(targetName, it) }
         libTask.dependsOn ":${targetName}CrossDist"
+        libTask.enableParallel = true
 
         task "$libName"(type: KlibInstall) {
             klib = libTask.artifact

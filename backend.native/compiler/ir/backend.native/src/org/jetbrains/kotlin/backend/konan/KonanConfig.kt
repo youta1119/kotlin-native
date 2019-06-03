@@ -1,44 +1,32 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan
 
 import com.intellij.openapi.project.Project
-import org.jetbrains.kotlin.backend.konan.descriptors.createForwardDeclarationsModule
-import org.jetbrains.kotlin.backend.konan.library.*
-import org.jetbrains.kotlin.backend.konan.library.impl.*
-import org.jetbrains.kotlin.backend.konan.util.*
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.cli.common.CLIConfigurationKeys
+import org.jetbrains.kotlin.cli.common.config.kotlinSourceRoots
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity.*
+import org.jetbrains.kotlin.cli.common.messages.GroupingMessageCollector
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
-import org.jetbrains.kotlin.config.kotlinSourceRoots
-import org.jetbrains.kotlin.descriptors.impl.ModuleDescriptorImpl
 import org.jetbrains.kotlin.descriptors.ModuleDescriptor
-import org.jetbrains.kotlin.konan.TempFiles
+import org.jetbrains.kotlin.konan.*
 import org.jetbrains.kotlin.konan.file.File
+import org.jetbrains.kotlin.konan.library.KonanLibrary
+import org.jetbrains.kotlin.konan.library.defaultResolver
+import org.jetbrains.kotlin.konan.library.libraryResolver
+import org.jetbrains.kotlin.konan.properties.loadProperties
 import org.jetbrains.kotlin.konan.target.*
-import org.jetbrains.kotlin.storage.LockBasedStorageManager
-import org.jetbrains.kotlin.storage.StorageManager
+import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
+import org.jetbrains.kotlin.konan.library.toUnresolvedLibraries
+import org.jetbrains.kotlin.konan.util.Logger
+import kotlin.system.exitProcess
 
 class KonanConfig(val project: Project, val configuration: CompilerConfiguration) {
-
-    val currentAbiVersion: Int = configuration.get(KonanConfigKeys.ABI_VERSION)!!
 
     internal val distribution = Distribution(
         false,
@@ -48,11 +36,14 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     internal val platformManager = PlatformManager(distribution)
     internal val targetManager = platformManager.targetManager(configuration.get(KonanConfigKeys.TARGET))
     internal val target = targetManager.target
+    internal val phaseConfig = configuration.get(CLIConfigurationKeys.PHASE_CONFIG)!!
 
     val linkOnly: Boolean =
             configuration.kotlinSourceRoots.isEmpty() && libraryNames.isNotEmpty() && produce.isNativeBinary
 
     val infoArgsOnly = configuration.kotlinSourceRoots.isEmpty() && !linkOnly
+
+    val debug: Boolean get() = configuration.getBoolean(KonanConfigKeys.DEBUG)
 
     init {
         if (!platformManager.isEnabled(target)) {
@@ -72,6 +63,8 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     internal val produce get() = configuration.get(KonanConfigKeys.PRODUCE)!!
 
+    internal val produceStaticFramework get() = configuration.getBoolean(KonanConfigKeys.STATIC_FRAMEWORK)
+
     val outputFiles = OutputFiles(configuration.get(KonanConfigKeys.OUTPUT), target, produce)
     val tempFiles = TempFiles(outputFiles.outputName, configuration.get(KonanConfigKeys.TEMPORARY_FILES_DIR))
 
@@ -86,31 +79,58 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     private val libraryNames: List<String>
         get() = configuration.getList(KonanConfigKeys.LIBRARY_FILES)
 
-    private val repositories = configuration.getList(KonanConfigKeys.REPOSITORIES)
-    private val resolver = defaultResolver(repositories, target, distribution)
+    private val unresolvedLibraries = libraryNames.toUnresolvedLibraries
 
-    internal val immediateLibraries: List<LibraryReaderImpl> by lazy {
-        val result = resolver.resolveImmediateLibraries(libraryNames, target,
-                currentAbiVersion,
-                configuration.getBoolean(KonanConfigKeys.NOSTDLIB),
-                configuration.getBoolean(KonanConfigKeys.NODEFAULTLIBS),
-                { msg -> configuration.report(STRONG_WARNING, msg) })
-        resolver.resolveLibrariesRecursive(result, target, currentAbiVersion)
-        result
+    private val repositories = configuration.getList(KonanConfigKeys.REPOSITORIES)
+    private val resolverLogger =
+        object : Logger {
+            private val collector = configuration.getNotNull(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY)
+            override fun warning(message: String)= collector.report(STRONG_WARNING, message)
+            override fun error(message: String) = collector.report(ERROR, message)
+            override fun log(message: String) = collector.report(LOGGING, message)
+            override fun fatal(message: String): Nothing {
+                collector.report(ERROR, message)
+                (collector as? GroupingMessageCollector)?.flush()
+                exitProcess(1)
+            }
+        }
+
+    private val compatibleCompilerVersions: List<KonanVersion> =
+        configuration.getList(KonanConfigKeys.COMPATIBLE_COMPILER_VERSIONS).map { it.parseKonanVersion() }
+
+    private val resolver = defaultResolver(
+        repositories,
+        libraryNames.filter { it.contains(File.separator) },
+        target,
+        distribution,
+        compatibleCompilerVersions + KonanVersion.CURRENT,
+        resolverLogger
+    ).libraryResolver()
+
+    internal val resolvedLibraries by lazy {
+        resolver.resolveWithDependencies(
+                unresolvedLibraries,
+                noStdLib = configuration.getBoolean(KonanConfigKeys.NOSTDLIB),
+                noDefaultLibs = configuration.getBoolean(KonanConfigKeys.NODEFAULTLIBS)).also {
+
+            validateExportedLibraries(configuration, it)
+        }
     }
 
-    fun librariesWithDependencies(moduleDescriptor: ModuleDescriptor?): List<KonanLibraryReader> {
+    fun librariesWithDependencies(moduleDescriptor: ModuleDescriptor?): List<KonanLibrary> {
         if (moduleDescriptor == null) error("purgeUnneeded() only works correctly after resolve is over, and we have successfully marked package files as needed or not needed.")
 
-        return immediateLibraries.purgeUnneeded(this).withResolvedDependencies()
+        return resolvedLibraries.filterRoots { (!it.isDefault && !this.purgeUserLibs) || it.isNeededForLink }.getFullList(TopologicalLibraryOrder)
     }
 
-    private val loadedDescriptors = loadLibMetadata()
-
-    internal val defaultNativeLibraries = 
-        if (produce == CompilerOutputKind.PROGRAM) 
-            File(distribution.defaultNatives(target)).listFiles.map { it.absolutePath } 
-        else emptyList()
+    internal val defaultNativeLibraries: List<String> = mutableListOf<String>().apply {
+        add(if (debug) "debug.bc" else "release.bc")
+        if (produce == CompilerOutputKind.PROGRAM) {
+            addAll(distribution.launcherFiles)
+        }
+    }.map {
+        File(distribution.defaultNatives(target)).child(it).absolutePath
+    }
 
     internal val nativeLibraries: List<String> = 
         configuration.getList(KonanConfigKeys.NATIVE_LIBRARY_FILES)
@@ -118,46 +138,21 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     internal val includeBinaries: List<String> = 
         configuration.getList(KonanConfigKeys.INCLUDED_BINARY_FILES)
 
-    fun loadLibMetadata(): List<ModuleDescriptorImpl> {
+    internal val defaultSystemLibraries: List<String> = emptyList()
 
-        val allMetadata = mutableListOf<ModuleDescriptorImpl>()
-        val specifics = configuration.get(CommonConfigurationKeys.LANGUAGE_VERSION_SETTINGS)!!
+    internal val languageVersionSettings =
+            configuration.get(CommonConfigurationKeys.LANGUAGE_VERSION_SETTINGS)!!
 
-        val libraries = immediateLibraries.withResolvedDependencies()
-        for (klib in libraries) {
-            profile("Loading ${klib.libraryName}") {
-                // MutableModuleContext needs ModuleDescriptorImpl, rather than ModuleDescriptor.
-                val moduleDescriptor = klib.moduleDescriptor(specifics)
-                allMetadata.add(moduleDescriptor)
-            }
-        }
-        return allMetadata
+    internal val friendModuleFiles: Set<File> =
+            configuration.get(KonanConfigKeys.FRIEND_MODULES)?.map { File(it) }?.toSet() ?: emptySet()
+
+    internal val manifestProperties = configuration.get(KonanConfigKeys.MANIFEST_FILE)?.let {
+        File(it).loadProperties()
     }
 
-    private var forwardDeclarationsModule: ModuleDescriptorImpl? = null
-
-    internal fun getOrCreateForwardDeclarationsModule(
-            builtIns: KotlinBuiltIns, storageManager: StorageManager? = null
-    ): ModuleDescriptorImpl {
-        forwardDeclarationsModule?.let { return it }
-        val result = createForwardDeclarationsModule(
-                builtIns,
-                storageManager ?: LockBasedStorageManager()
-        )
-
-        forwardDeclarationsModule = result
-        return result
-    }
-
-    internal val moduleDescriptors: List<ModuleDescriptorImpl> by lazy {
-        for (module in loadedDescriptors) {
-            // Yes, just to all of them.
-            module.setDependencies(loadedDescriptors + getOrCreateForwardDeclarationsModule(module.builtIns))
-        }
-
-        loadedDescriptors
-    }
+    internal val isInteropStubs: Boolean get() = manifestProperties?.getProperty("interop") == "true"
 }
 
 fun CompilerConfiguration.report(priority: CompilerMessageSeverity, message: String) 
     = this.getNotNull(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY).report(priority, message)
+

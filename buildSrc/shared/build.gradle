@@ -19,6 +19,7 @@ buildscript {
         gradleProperties = new Properties()
         gradleProperties.load(new FileInputStream("$projectDir/../../gradle.properties"))
         buildKotlinVersion = gradleProperties."buildKotlinVersion"
+        buildKotlinCompilerRepo = gradleProperties."buildKotlinCompilerRepo"
     }
 
     apply from: '../../gradle/kotlinGradlePlugin.gradle'
@@ -31,8 +32,13 @@ sourceSets.main.kotlin.srcDirs = ["$projectDir/../../shared/src/main/kotlin"]
 
 dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib:$buildKotlinVersion"
+    compile "org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion"
 }
 
 rootProject.dependencies {
     runtime project(path)
+}
+
+compileKotlin {
+    kotlinOptions.jvmTarget = "1.8"
 }

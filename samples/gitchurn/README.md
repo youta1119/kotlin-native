@@ -1,17 +1,16 @@
 # GIT frequency analyzer
 
 This example shows how one could perform statistics on Git repository.
-libgit2 is required for this to work (`apt-get install libgit2-dev`).
 
-To build use `../gradlew build` or `./build.sh`.
+Install libgit2 development files.
+For Debian-like Linux - use `apt-get install libgit2-dev`.
+For Windows - `pacman -S mingw-w64-x86_64-libgit2` in MinGW64 console, if you do
+not have MSYS2-MinGW64 installed - install it first as described in http://www.msys2.org
 
-To run use `../gradlew run`.
+To build use `../gradlew assemble`.
 
-To change run arguments, change property runArgs in gradle.propeties file 
-or pass `-PrunArgs="../../"` to gradle run. 
+To run use `../gradlew runProgram` or execute the program directly:
 
-Alternatively you can run artifact directly 
-
-    ./build/konan/bin/<target>/GitChurn.kexe ../../
+    ./build/bin/gitChurn/main/release/executable/gitchurn.kexe ../../
 
 It will print most frequently modified (by number of commits) files in repository.

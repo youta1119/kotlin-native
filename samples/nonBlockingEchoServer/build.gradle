@@ -1,7 +1,19 @@
-apply plugin: 'konan'
+plugins {
+    id 'kotlin-multiplatform'
+}
 
-konan.targets = ['macbook', 'linux']
+// Determine host preset.
+def hostPreset = MPPTools.defaultHostPreset(project, [kotlin.presets.macosX64, kotlin.presets.linuxX64])
 
-konanArtifacts {
-    program('EchoServer')
+kotlin {
+    targets {
+        fromPreset(hostPreset, 'nonBlockingEchoServer') {
+            compilations.main.outputKinds 'EXECUTABLE'
+            compilations.main.entryPoint 'sample.nbechoserver.main'
+        }
+    }
+}
+
+MPPTools.createRunTask(project, 'runProgram', kotlin.targets.nonBlockingEchoServer) {
+    args 3000
 }

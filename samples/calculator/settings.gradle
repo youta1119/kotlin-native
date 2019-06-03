@@ -1,10 +1,16 @@
-include ':common'
-include ':jvm'
-include ':ios'
+include ':arithmeticParser'
+include ':cliApp'
 
-if (System.getenv('ANDROID_HOME') != null) {
-    include ':android'
+boolean sdkDirPropertySpecified = false
+File localPropertiesFile = file("${rootProject.projectDir}/local.properties")
+if (localPropertiesFile.isFile()) {
+    Properties properties = new Properties()
+    localPropertiesFile.withInputStream { inputStream -> properties.load(inputStream) }
+    sdkDirPropertySpecified = properties.containsKey('sdk.dir')
 }
 
-includeBuild '../../shared'
-includeBuild '../../tools/kotlin-native-gradle-plugin'
+
+// Don't create Android tasks if a user has no Android SDK.
+if (sdkDirPropertySpecified || System.getenv('ANDROID_HOME') != null) {
+    include ':androidApp'
+}

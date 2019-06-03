@@ -1,10 +1,16 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package runtime.workers.worker3
 
 import kotlin.test.*
 
-import konan.worker.*
+import kotlin.native.concurrent.*
 
-data class WorkerArgument(val intParam: Int, val stringParam: String)
+data class DataParam(var int: Int)
+data class WorkerArgument(val intParam: Int, val dataParam: DataParam)
 data class WorkerResult(val intResult: Int, val stringResult: String)
 
 @Test fun runTest() {
@@ -12,20 +18,19 @@ data class WorkerResult(val intResult: Int, val stringResult: String)
 }
 
 fun main(args: Array<String>) {
-    val worker = startWorker()
-    val s = "zzz${args.size.toString()}"
-
+    val worker = Worker.start()
+    val dataParam = DataParam(17)
     val future = try {
-        worker.schedule(TransferMode.CHECKED,
-                { WorkerArgument(42, s) },
-                { input -> WorkerResult(input.intParam, input.stringParam + " result") }
-        )
+        worker.execute(TransferMode.SAFE,
+                { WorkerArgument(42, dataParam) }) {
+            input -> WorkerResult(input.intParam, input.dataParam.toString() + " result")
+        }
     } catch (e: IllegalStateException) {
         null
     }
     if (future != null)
         println("Fail 1")
-    if (s != "zzz0") println("Fail 2")
-    worker.requestTermination().consume { _ -> }
+    if (dataParam.int != 17) println("Fail 2")
+    worker.requestTermination().result
     println("OK")
 }

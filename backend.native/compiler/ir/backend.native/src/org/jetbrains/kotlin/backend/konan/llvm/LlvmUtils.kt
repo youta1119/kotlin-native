@@ -1,24 +1,13 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import kotlinx.cinterop.*
 import llvm.*
-import org.jetbrains.kotlin.backend.konan.descriptors.LlvmSymbolOrigin
+import org.jetbrains.kotlin.descriptors.konan.CompiledKonanModuleOrigin
 
 internal val LLVMValueRef.type: LLVMTypeRef
     get() = LLVMTypeOf(this)!!
@@ -38,9 +27,8 @@ internal interface ConstPointer : ConstValue {
 }
 
 internal fun constPointer(value: LLVMValueRef) = object : ConstPointer {
-
     init {
-        assert (LLVMIsConstant(value) == 1)
+        assert(LLVMIsConstant(value) == 1)
     }
 
     override val llvm = value
@@ -102,6 +90,14 @@ internal class Int64(val value: Long) : ConstValue {
     override val llvm = LLVMConstInt(LLVMInt64Type(), value, 1)!!
 }
 
+internal class Float32(val value: Float) : ConstValue {
+    override val llvm = LLVMConstReal(LLVMFloatType(), value.toDouble())!!
+}
+
+internal class Float64(val value: Double) : ConstValue {
+    override val llvm = LLVMConstReal(LLVMDoubleType(), value)!!
+}
+
 internal class Zero(val type: LLVMTypeRef) : ConstValue {
     override val llvm = LLVMConstNull(type)!!
 }
@@ -122,7 +118,10 @@ internal val int1Type = LLVMInt1Type()!!
 internal val int8Type = LLVMInt8Type()!!
 internal val int16Type = LLVMInt16Type()!!
 internal val int32Type = LLVMInt32Type()!!
+internal val int64Type = LLVMInt64Type()!!
 internal val int8TypePtr = pointerType(int8Type)
+internal val floatType = LLVMFloatType()!!
+internal val doubleType = LLVMDoubleType()!!
 
 internal val voidType = LLVMVoidType()!!
 
@@ -142,7 +141,6 @@ internal val RuntimeAware.kTypeInfoPtr: LLVMTypeRef
     get() = pointerType(kTypeInfo)
 internal val kInt1         = LLVMInt1Type()!!
 internal val kBoolean      = kInt1
-internal val kInt64        = LLVMInt64Type()!!
 internal val kInt8Ptr      = pointerType(int8Type)
 internal val kInt8PtrPtr   = pointerType(kInt8Ptr)
 internal val kNullInt8Ptr  = LLVMConstNull(kInt8Ptr)!!
@@ -206,7 +204,7 @@ internal fun ContextUtils.addGlobal(name: String, type: LLVMTypeRef, isExported:
     return result
 }
 
-internal fun ContextUtils.importGlobal(name: String, type: LLVMTypeRef, origin: LlvmSymbolOrigin,
+internal fun ContextUtils.importGlobal(name: String, type: LLVMTypeRef, origin: CompiledKonanModuleOrigin,
                                        threadLocal: Boolean = false): LLVMValueRef {
 
     context.llvm.imports.add(origin)
@@ -214,7 +212,7 @@ internal fun ContextUtils.importGlobal(name: String, type: LLVMTypeRef, origin: 
     val found = LLVMGetNamedGlobal(context.llvmModule, name)
     if (found != null) {
         assert (getGlobalType(found) == type)
-        assert (LLVMGetInitializer(found) == null)
+        assert (LLVMGetInitializer(found) == null) { "$name is already declared in the current module" }
         if (threadLocal)
             assert(LLVMGetThreadLocalMode(found) == context.llvm.tlsMode)
         return found
@@ -278,26 +276,47 @@ fun parseBitcodeFile(path: String): LLVMModuleRef = memScoped {
     }
 }
 
-private val nounwindAttrKindId: Int
-    get() = getAttributeKindId("nounwind")
+private val nounwindAttrKindId by lazy {
+    getLlvmAttributeKindId("nounwind")
+}
+
+private val noreturnAttrKindId by lazy {
+    getLlvmAttributeKindId("noreturn")
+}
+
+private val signextAttrKindId by lazy {
+    getLlvmAttributeKindId("signext")
+}
+
 
 fun isFunctionNoUnwind(function: LLVMValueRef): Boolean {
-
     val attribute = LLVMGetEnumAttributeAtIndex(function, LLVMAttributeFunctionIndex, nounwindAttrKindId)
     return attribute != null
 }
 
-private fun getAttributeKindId(attributeName: String): Int {
-    val nounwindAttrKindId = LLVMGetEnumAttributeKindForName(attributeName, attributeName.length.signExtend())
-    if (nounwindAttrKindId == 0) {
+internal fun getLlvmAttributeKindId(attributeName: String): Int {
+    val attrKindId = LLVMGetEnumAttributeKindForName(attributeName, attributeName.length.signExtend())
+    if (attrKindId == 0) {
         throw Error("Unable to find '$attributeName' attribute kind id")
     }
-    return nounwindAttrKindId
+    return attrKindId
 }
 
 fun setFunctionNoUnwind(function: LLVMValueRef) {
     val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(function.type), nounwindAttrKindId, 0)!!
     LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, attribute)
+}
+
+fun setFunctionNoReturn(function: LLVMValueRef) {
+    val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(function.type), noreturnAttrKindId, 0)!!
+    LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, attribute)
+}
+
+fun addFunctionSignext(function: LLVMValueRef, index: Int, type: LLVMTypeRef?) {
+    if (type == int1Type || type == int8Type || type == int16Type) {
+        val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(function.type), signextAttrKindId, 0)!!
+        LLVMAddAttributeAtIndex(function, index, attribute)
+    }
 }
 
 internal fun String.mdString() = LLVMMDString(this, this.length)!!

@@ -157,11 +157,17 @@ data class KotlinFunctionType(
 internal val cnamesStructsPackageName = "cnames.structs"
 
 object KotlinTypes {
+    val independent = Classifier.topLevel("kotlin.native.internal", "Independent")
+
     val boolean by BuiltInType
     val byte by BuiltInType
     val short by BuiltInType
     val int by BuiltInType
     val long by BuiltInType
+    val uByte by BuiltInType
+    val uShort by BuiltInType
+    val uInt by BuiltInType
+    val uLong by BuiltInType
     val float by BuiltInType
     val double by BuiltInType
     val unit by BuiltInType
@@ -172,7 +178,6 @@ object KotlinTypes {
     val mutableList by CollectionClassifier
     val set by CollectionClassifier
     val map by CollectionClassifier
-
 
     val nativePtr by InteropType
 
@@ -186,6 +191,7 @@ object KotlinTypes {
     val objCObjectMeta by InteropClassifier
     val objCClass by InteropClassifier
     val objCClassOf by InteropClassifier
+    val objCProtocol by InteropClassifier
 
     val cValuesRef by InteropClassifier
 
@@ -198,7 +204,6 @@ object KotlinTypes {
     val cFunction by InteropClassifier
 
     val objCObjectVar by InteropClassifier
-    val objCStringVarOf by InteropClassifier
 
     val objCObjectBase by InteropClassifier
     val objCObjectBaseMeta by InteropClassifier
@@ -220,6 +225,7 @@ object KotlinTypes {
 
     private object InteropClassifier : ClassifierAtPackage("kotlinx.cinterop")
     private object InteropType : TypeAtPackage("kotlinx.cinterop")
+
 }
 
 abstract class KotlinFile(
@@ -316,6 +322,17 @@ abstract class KotlinFile(
 
 }
 
-data class KotlinParameter(val name: String, val type: KotlinType) {
-    fun render(scope: KotlinScope) = "${name.asSimpleName()}: ${type.render(scope)}"
+data class KotlinParameter(
+        val name: String,
+        val type: KotlinType,
+        val isVararg: Boolean,
+        val annotations: List<String>
+) {
+    fun render(scope: KotlinScope) = buildString {
+        annotations.forEach { append("$it ") }
+        if (isVararg) append("vararg ")
+        append(name.asSimpleName())
+        append(": ")
+        append(type.render(scope))
+    }
 }

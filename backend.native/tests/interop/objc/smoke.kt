@@ -1,6 +1,11 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 import kotlinx.cinterop.*
 import objcSmoke.*
-import konan.ref.*
+import kotlin.native.ref.*
 import kotlin.test.*
 
 fun main(args: Array<String>) {
@@ -13,6 +18,15 @@ fun run() {
     testTypeOps()
     testConversions()
     testWeakRefs()
+    testExceptions()
+    testBlocks()
+    testCustomRetain()
+    testVarargs()
+    testOverrideInit()
+    testMultipleInheritanceClash()
+    testClashingWithAny()
+
+    assertEquals(2, ForwardDeclaredEnum.TWO.value)
 
     println(
             getSupplier(
@@ -39,6 +53,10 @@ fun run() {
     replacePairElements(pair, 1, 2)
     pair.swap()
     println("${pair.first}, ${pair.second}")
+
+    val defaultPair = MutablePairImpl()
+    assertEquals(defaultPair.first(), 123)
+    assertEquals(defaultPair.second(), 321)
 
     // equals and hashCode (virtually):
     val map = mapOf(foo to pair, pair to foo)
@@ -71,6 +89,12 @@ fun run() {
 
     println(STRING_MACRO)
     println(CFSTRING_MACRO)
+
+    // Ensure that overriding method bridge has retain-autorelease sequence:
+    createObjectWithFactory(object : NSObject(), ObjectFactoryProtocol {
+        override fun create() = autoreleasepool { NSObject() }
+    })
+
 }
 
 fun MutablePairProtocol.swap() {
@@ -100,6 +124,8 @@ class MutablePairImpl(first: Int, second: Int) : NSObject(), MutablePairProtocol
     override fun update(index: Int, sub: Int) {
         elements[index] -= sub
     }
+
+    constructor() : this(123, 321)
 }
 
 fun testTypeOps() {
@@ -118,9 +144,21 @@ fun testTypeOps() {
     assertTrue(NSValue.asAny() is NSObjectProtocolMeta)
     assertFalse(NSValue.asAny() is NSObjectProtocol) // Must be true, but not implemented properly yet.
 
-    assertEquals(3, ("foo" as NSString).length())
-    assertEquals(4, ((1..4).joinToString("") as NSString).length())
-    assertEquals(2, (listOf(0, 1) as NSArray).count())
+    assertFalse(Any() is ObjCClass)
+    assertFalse(Any() is ObjCClassOf<*>)
+    assertFalse(NSObject().asAny() is ObjCClass)
+    assertFalse(NSObject().asAny() is ObjCClassOf<*>)
+    assertTrue(NSObject.asAny() is ObjCClass)
+    assertTrue(NSObject.asAny() is ObjCClassOf<*>)
+
+    assertFalse(Any() is ObjCProtocol)
+    assertTrue(getPrinterProtocolRaw() is ObjCProtocol)
+    val printerProtocol = getPrinterProtocol()!!
+    assertTrue(printerProtocol.asAny() is ObjCProtocol)
+
+    assertEquals(3u, ("foo" as NSString).length())
+    assertEquals(4u, ((1..4).joinToString("") as NSString).length())
+    assertEquals(2u, (listOf(0, 1) as NSArray).count())
     assertEquals(42L, (42 as NSNumber).longLongValue())
 
     assertFails { "bar" as NSNumber }
@@ -148,7 +186,7 @@ fun testMethodsOfAny(kotlinObject: Any, equalNsObject: NSObject, otherObject: An
 }
 
 fun testWeakRefs() {
-    testWeakReference({ NSObject.new()!! })
+    testWeakReference({ createNSObject()!! })
 
     createAndAbandonWeakRef(NSObject())
 
@@ -159,6 +197,8 @@ fun testWeakReference(block: () -> NSObject) {
     val ref = autoreleasepool {
         createAndTestWeakReference(block)
     }
+
+    kotlin.native.internal.GC.collect()
 
     assertNull(ref.get())
 }
@@ -174,6 +214,161 @@ fun createWeakReference(block: () -> NSObject) = WeakReference(block())
 
 fun createAndAbandonWeakRef(obj: NSObject) {
     WeakReference(obj)
+}
+
+fun testExceptions() {
+    assertFailsWith<MyException> {
+        ExceptionThrowerManager.throwExceptionWith(object : NSObject(), ExceptionThrowerProtocol {
+            override fun throwException() {
+                throw MyException()
+            }
+        })
+    }
+}
+
+fun testBlocks() {
+    assertTrue(Blocks.blockIsNull(null))
+    assertFalse(Blocks.blockIsNull({}))
+
+    assertEquals(null, Blocks.nullBlock)
+    assertNotEquals(null, Blocks.notNullBlock)
+
+    assertEquals(10, Blocks.same({ a, b, c, d -> a + b + c + d })!!(1, 2, 3, 4))
+
+    assertEquals(222, callProvidedBlock(object : NSObject(), BlockProviderProtocol {
+        override fun block(): (Int) -> Int = { it * 2 }
+    }, 111))
+
+    assertEquals(322, callPlusOneBlock(object : NSObject(), BlockConsumerProtocol {
+        override fun callBlock(block: ((Int) -> Int)?, argument: Int) = block!!(argument)
+    }, 321))
+}
+
+private lateinit var retainedMustNotBeDeallocated: MustNotBeDeallocated
+
+fun testCustomRetain() {
+    fun test() {
+        useCustomRetainMethods(object : Foo(), CustomRetainMethodsProtocol {
+            override fun returnRetained(obj: Any?) = obj
+            override fun consume(obj: Any?) {}
+            override fun consumeSelf() {}
+            override fun returnRetainedBlock(block: (() -> Unit)?) = block
+        })
+
+        CustomRetainMethodsImpl().let {
+            it.returnRetained(Any())
+            retainedMustNotBeDeallocated = MustNotBeDeallocated() // Retain to detect possible over-release.
+            it.consume(retainedMustNotBeDeallocated)
+            it.consumeSelf()
+            it.returnRetainedBlock({})!!()
+        }
+    }
+
+    autoreleasepool {
+        test()
+        kotlin.native.internal.GC.collect()
+    }
+
+    assertFalse(unexpectedDeallocation)
+}
+
+fun testVarargs() {
+    assertEquals(
+            "a b -1",
+            TestVarargs.testVarargsWithFormat(
+                    "%@ %s %d",
+                    "a" as NSString, "b".cstr, (-1).toByte()
+            ).formatted
+    )
+
+    assertEquals(
+            "2 3 9223372036854775807",
+            TestVarargs(
+                    "%d %d %lld",
+                    2.toShort(), 3, Long.MAX_VALUE
+            ).formatted
+    )
+
+    assertEquals(
+            "0.1 0.2 1 0",
+            TestVarargs.create(
+                    "%.1f %.1lf %d %d",
+                    0.1.toFloat(), 0.2, true, false
+            ).formatted
+    )
+
+    assertEquals(
+            "1 2 3",
+            TestVarargs(
+                    format = "%d %d %d",
+                    args = *arrayOf(1, 2, 3)
+            ).formatted
+    )
+
+    assertEquals(
+            "4 5 6",
+            TestVarargs(
+                    args = *arrayOf(4, *arrayOf(5, 6)),
+                    format = "%d %d %d"
+            ).formatted
+    )
+
+    assertEquals(
+            "7",
+            TestVarargsSubclass.stringWithFormat(
+                    "%d",
+                    7
+            )
+    )
+}
+
+fun testOverrideInit() {
+    assertEquals(42, (TestOverrideInitImpl.createWithValue(42) as TestOverrideInitImpl).value)
+}
+
+class TestOverrideInitImpl @OverrideInit constructor(val value: Int) : TestOverrideInit(value) {
+    companion object : TestOverrideInitMeta()
+}
+
+private class MyException : Throwable()
+
+fun testMultipleInheritanceClash() {
+    val clash1 = MultipleInheritanceClash1()
+    val clash2 = MultipleInheritanceClash2()
+
+    clash1.delegate = clash1
+    assertEquals(clash1, clash1.delegate)
+    clash1.setDelegate(clash2)
+    assertEquals(clash2, clash1.delegate())
+
+    clash2.delegate = clash1
+    assertEquals(clash1, clash2.delegate)
+    clash2.setDelegate(clash2)
+    assertEquals(clash2, clash2.delegate())
+}
+
+fun testClashingWithAny() {
+    assertEquals("description", TestClashingWithAny1().toString())
+    assertEquals("toString", TestClashingWithAny1().toString_())
+    assertEquals("toString_", TestClashingWithAny1().toString__())
+    assertEquals(1, TestClashingWithAny1().hashCode())
+    assertEquals(31, TestClashingWithAny1().hashCode_())
+    assertFalse(TestClashingWithAny1().equals(TestClashingWithAny1()))
+    assertTrue(TestClashingWithAny1().equals_(TestClashingWithAny1()))
+
+    assertEquals("description", TestClashingWithAny2().toString())
+    assertEquals(Unit, TestClashingWithAny2().toString_())
+    assertEquals(2, TestClashingWithAny2().hashCode())
+    assertEquals(Unit, TestClashingWithAny2().hashCode_())
+    assertFalse(TestClashingWithAny2().equals(TestClashingWithAny2()))
+    assertEquals(Unit, TestClashingWithAny2().equals_(42))
+
+    assertEquals("description", TestClashingWithAny3().toString())
+    assertEquals("toString:11", TestClashingWithAny3().toString(11))
+    assertEquals(3, TestClashingWithAny3().hashCode())
+    assertEquals(4, TestClashingWithAny3().hashCode(3))
+    assertFalse(TestClashingWithAny3().equals(TestClashingWithAny3()))
+    assertTrue(TestClashingWithAny3().equals())
 }
 
 fun nsArrayOf(vararg elements: Any): NSArray = NSMutableArray().apply {

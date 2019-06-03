@@ -1,35 +1,40 @@
-apply plugin: 'konan'
+plugins {
+    id 'kotlin-multiplatform'
+}
 
-konan.targets = ['macbook', 'linux']
+def torchHome = "${MPPTools.kotlinNativeDataPath()}/third-party/torch"
 
-def konanUserDir = System.getenv("KONAN_DATA_DIR") ?: "${System.getProperty("user.home")}/.konan"
-def torchHome = "$konanUserDir/third-party/torch"
+// Determine host preset.
+def hostPreset = MPPTools.defaultHostPreset(project, [kotlin.presets.macosX64, kotlin.presets.linuxX64])
+
+kotlin {
+    targets {
+        fromPreset(hostPreset, 'torch') {
+            compilations.main.outputKinds 'EXECUTABLE'
+            compilations.main.entryPoint 'sample.torch.main'
+            compilations.main.linkerOpts "-L$torchHome/lib", '-lATen'
+            compilations.main.cinterops {
+                torch {
+                    includeDirs "$torchHome/include", "$torchHome/include/TH"
+                }
+            }
+        }
+    }
+}
 
 task downloadTorch(type: Exec) {
-    workingDir getProjectDir()
+    workingDir projectDir
     commandLine './downloadTorch.sh'
 }
+tasks[kotlin.targets.torch.compilations.main.cinterops.torch.interopProcessingTaskName].dependsOn downloadTorch
 
-konanArtifacts {
-    interop('TorchInterop') {
-        defFile "src/main/c_interop/torch.def"
-        includeDirs "${torchHome}/include", "${torchHome}/include/TH"
-        dependsOn 'downloadTorch'
-    }
-
-    program('Torch') {
-        libraries {
-            artifact 'TorchInterop'
-        }
-        linkerOpts "-L${torchHome}/lib -lATen"
-    }
+task downloadMNIST(type: Exec) {
+    workingDir projectDir
+    commandLine './downloadMNIST.sh'
 }
 
-run.dependsOn 'warning'
-
-task warning {
-    doLast {
-        println "Note: You may need to specify LD_LIBRARY_PATH or DYLD_LIBRARY_PATH env variables to $torchHome/lib if the ATen dynamic library cannot be found."
-
-    }
+MPPTools.createRunTask(project, 'runProgram', kotlin.targets.torch) {
+    dependsOn downloadMNIST
+    environment 'LD_LIBRARY_PATH': "$torchHome/lib"
+    environment 'DYLD_LIBRARY_PATH': "$torchHome/lib"
 }

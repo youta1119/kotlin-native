@@ -1,8 +1,13 @@
+/*
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
+ */
+
 package runtime.workers.freeze_stress
 
 import kotlin.test.*
 
-import konan.worker.*
+import kotlin.native.concurrent.*
 
 class Random(private var seed: Int) {
     fun next(): Int {
@@ -68,6 +73,7 @@ class Graph(val nodes: List<Node>, val roots: List<Node>)
 fun min(x: Int, y: Int) = if (x < y) x else y
 fun max(x: Int, y: Int) = if (x > y) x else y
 
+@ThreadLocal
 val random = Random(42)
 
 fun generate(condensationSize: Int, branchingFactor: Int, swellingFactor: Int): Graph {

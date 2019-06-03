@@ -40,7 +40,7 @@ if not "!ARG!" == "" (
     )
     if "!ARG!" == "--time" (
         set "KONAN_ARGS=%KONAN_ARGS% --time"
-        set "JAVA_ARGS=%JAVA_ARGS% -agentlib:hprof=cpu=samples -Dkonan.profile=true"
+        set "JAVA_ARGS=%JAVA_ARGS% -Dkonan.profile=true"
         goto next
     )
 
@@ -55,6 +55,8 @@ set "NATIVE_LIB=%_KONAN_HOME%\konan\nativelib"
 set "KONAN_LIB=%_KONAN_HOME%\konan\lib"
 
 set "SHARED_JAR=%KONAN_LIB%\shared.jar"
+set "EXTRACTED_METADATA_JAR=%KONAN_LIB%\konan.metadata.jar"
+set "EXTRACTED_SERIALIZER_JAR=%KONAN_LIB%\konan.serializer.jar"
 set "INTEROP_INDEXER_JAR=%KONAN_LIB%\Indexer.jar"
 set "INTEROP_RUNTIME_JAR=%KONAN_LIB%\Runtime.jar"
 set "KLIB_JAR=%KONAN_LIB%\klib.jar"
@@ -65,11 +67,14 @@ set "KOTLIN_REFLECT_JAR=%KONAN_LIB%\kotlin-stdlib.jar"
 set "KOTLIN_SCRIPT_RUNTIME_JAR=%KONAN_LIB%\kotlin-script-runtime.jar"
 set "STUB_GENERATOR_JAR=%KONAN_LIB%\StubGenerator.jar"
 set "UTILITIES_JAR=%KONAN_LIB%\utilities.jar"
+set "NATIVE_UTILS_JAR=%KONAN_LIB%\kotlin-native-utils.jar"
+set TROVE_JAR="%KONAN_LIB%\lib\trove4j.jar"
 
-set "KONAN_CLASSPATH=%KOTLIN_JAR%;%KOTLIN_STDLIB_JAR%;%KOTLIN_REFLECT_JAR%;%KOTLIN_SCRIPT_RUNTIME_JAR%;%INTEROP_RUNTIME_JAR%;%KONAN_JAR%;%STUB_GENERATOR_JAR%;%INTEROP_INDEXER_JAR%;%SHARED_JAR%;%KLIB_JAR%;%UTILITIES_JAR%"
+set "KONAN_CLASSPATH=%KOTLIN_JAR%;%KOTLIN_STDLIB_JAR%;%KOTLIN_REFLECT_JAR%;%KOTLIN_SCRIPT_RUNTIME_JAR%;%INTEROP_RUNTIME_JAR%;%KONAN_JAR%;%STUB_GENERATOR_JAR%;%INTEROP_INDEXER_JAR%;%SHARED_JAR%;%EXTRACTED_METADATA_JAR%;%EXTRACTED_SERIALIZER_JAR%;%KLIB_JAR%;%UTILITIES_JAR%;%NATIVE_UTILS_JAR%;%TROVE_JAR%"
 
 set JAVA_OPTS=-ea ^
     -Xmx3G ^
+    -XX:TieredStopAtLevel=1 ^
     "-Djava.library.path=%NATIVE_LIB%" ^
     "-Dkonan.home=%_KONAN_HOME%" ^
     -Dfile.encoding=UTF-8 ^
@@ -94,8 +99,8 @@ goto :eof
 :set_path
   rem libclang.dll is dynamically linked and thus requires correct PATH to be loaded.
   rem TODO: remove this hack.
-  if ("%KONAN_DATA_DIR%"=="") (set KONAN_DATA_DIR=%USERPROFILE%\.konan)
-  set "PATH=%KONAN_DATA_DIR%\dependencies\msys2-mingw-w64-x86_64-gcc-7.2.0-clang-llvm-5.0.0-windows-x86-64\bin;%PATH%"
+  if "%KONAN_DATA_DIR%"=="" (set KONAN_DATA_DIR=%USERPROFILE%\.konan)
+  set "PATH=%KONAN_DATA_DIR%\dependencies\msys2-mingw-w64-x86_64-gcc-7.3.0-clang-llvm-lld-6.0.1-2\bin;%PATH%"
 goto :eof
 
 :end

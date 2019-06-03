@@ -1,23 +1,56 @@
-apply plugin: 'konan'
-
-konan {
-    targets = ['macbook', 'linux']
-    jvmArgs = ['-Xmx8g']
+plugins {
+    id 'kotlin-multiplatform'
 }
 
-def includePrefixes = [ '/opt/local/include', '/usr/include', '/usr/local/include' ]
+// Determine host preset.
+def hostPreset = MPPTools.defaultHostPreset(project)
 
-konanArtifacts {
-    interop('gtk3') {
-        includePrefixes.each {
-            includeDirs "$it/atk-1.0", "$it/gdk-pixbuf-2.0", "$it/cairo", "$it/pango-1.0", "$it/gtk-3.0", "$it/glib-2.0"
+kotlin {
+    targets {
+        fromPreset(hostPreset, 'gtk') {
+            compilations.main.outputKinds 'EXECUTABLE'
+            compilations.main.entryPoint 'sample.gtk.main'
+            compilations.main.cinterops {
+                gtk3 {
+                    switch (hostPreset) {
+                        case presets.macosX64:
+                        case presets.linuxX64:
+                            ['/opt/local/include',
+                             '/usr/include',
+                             '/usr/local/include'
+                            ].each {
+                                includeDirs "$it/atk-1.0",
+                                            "$it/gdk-pixbuf-2.0",
+                                            "$it/cairo",
+                                            "$it/pango-1.0",
+                                            "$it/gtk-3.0",
+                                            "$it/glib-2.0"
+                            }
+                            includeDirs '/opt/local/lib/glib-2.0/include',
+                                        '/usr/lib/x86_64-linux-gnu/glib-2.0/include',
+                                        '/usr/local/lib/glib-2.0/include'
+                            break
+                        case presets.mingwX64:
+                            includeDirs "${MPPTools.mingwPath()}/include/atk-1.0",
+                                        "${MPPTools.mingwPath()}/include/gdk-pixbuf-2.0",
+                                        "${MPPTools.mingwPath()}/include/cairo",
+                                        "${MPPTools.mingwPath()}/include/pango-1.0",
+                                        "${MPPTools.mingwPath()}/include/gtk-3.0",
+                                        "${MPPTools.mingwPath()}/include/glib-2.0",
+                                        "${MPPTools.mingwPath()}/lib/glib-2.0/include"
+                            break
+                    }
+                }
+            }
+            if (presets.mingwX64 == hostPreset) {
+                compilations.main.linkerOpts "-L${MPPTools.mingwPath()}/lib"
+            }
         }
-        includeDirs '/opt/local/lib/glib-2.0/include', '/usr/lib/x86_64-linux-gnu/glib-2.0/include', '/usr/local/lib/glib-2.0/include'
     }
+}
 
-    program('Gtk3Demo') {
-        libraries {
-            artifact 'gtk3'
-        }
+MPPTools.createRunTask(project, 'runProgram', kotlin.targets.gtk) {
+    if (kotlin.presets.mingwX64 == hostPreset) {
+        environment 'PATH': "${MPPTools.mingwPath()}/bin"
     }
 }

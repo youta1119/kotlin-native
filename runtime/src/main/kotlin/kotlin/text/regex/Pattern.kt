@@ -1,17 +1,6 @@
 /*
- * Copyright 2010-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2010-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license
+ * that can be found in the LICENSE file.
  */
 
 /*
@@ -69,16 +58,12 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
     /** Compiles the given pattern */
     init {
         if (flags != 0 && flags or flagsBitMask != flagsBitMask) {
-            throw IllegalArgumentException()
+            throw IllegalArgumentException("Invalid match flags value")
         }
-
-        // It's for debug purposes.
-        AbstractSet.counter = 1
-
         startNode = processExpression(-1, this.flags, null)
 
         if (!lexemes.isEmpty()) {
-            throw PatternSyntaxException()
+            throw PatternSyntaxException("Trailing characters", pattern, lexemes.curTokenIndex)
         }
 
         // Finalize compilation
@@ -324,7 +309,7 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
             }
             lexemes.currentChar == Lexer.CHAR_RIGHT_PARENTHESIS -> {
                 if (last is FinalSet) {
-                    throw PatternSyntaxException()
+                    throw PatternSyntaxException("unmatched )", pattern, lexemes.curTokenIndex)
                 }
                 cur = EmptySet(last)
             }
@@ -487,7 +472,7 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
             }
             term = processExpression(char and 0xff00ffff.toInt(), newFlags, last) // Remove flags from the token.
             if (lexemes.currentChar != Lexer.CHAR_RIGHT_PARENTHESIS) {
-                throw PatternSyntaxException()
+                throw PatternSyntaxException("unmatched (", pattern, lexemes.curTokenIndex)
             }
             lexemes.next()
         } else {
@@ -503,7 +488,7 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
 
                     term = processRange(negative, last)
                     if (lexemes.currentChar != Lexer.CHAR_RIGHT_SQUARE_BRACKET) {
-                        throw PatternSyntaxException()
+                        throw PatternSyntaxException("unmatched [", pattern, lexemes.curTokenIndex)
                     }
                     lexemes.setModeWithReread(Lexer.Mode.PATTERN)
                     lexemes.next()
@@ -575,7 +560,7 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
                         backRefs[number]!!.isBackReferenced = true
                         needsBackRefReplacement = true // And process back references in the second pass.
                     } else {
-                        throw PatternSyntaxException()  // Wrong group number.
+                        throw PatternSyntaxException("No such group yet exists at this point in the pattern", pattern, lexemes.curTokenIndex)
                     }
                 }
 
@@ -607,11 +592,14 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
                         }
                         char == Lexer.CHAR_RIGHT_PARENTHESIS -> {
                             if (last is FinalSet) {
-                                throw PatternSyntaxException()
+                                throw PatternSyntaxException("unmatched )", pattern, lexemes.curTokenIndex)
                             }
                             term = EmptySet(last)
                         }
-                        else -> throw PatternSyntaxException()
+                        else -> {
+                            val current = if (lexemes.isSpecial) lexemes.curSpecialToken.toString() else char.toString()
+                            throw PatternSyntaxException("Dangling meta construction: $current", pattern, lexemes.curTokenIndex)
+                        }
                     }
                 }
             }
@@ -730,13 +718,13 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
                                 }
                                 result.add(buffer, cur)
                             } catch (e: Exception) {
-                                throw PatternSyntaxException()
+                                throw PatternSyntaxException("Illegal character range", pattern, lexemes.curTokenIndex)
                             }
 
                             lexemes.next()
                             buffer = -1
                         } else {
-                            throw PatternSyntaxException()
+                            throw PatternSyntaxException("Illegal character range", pattern, lexemes.curTokenIndex)
                         }
                     }
                 }
@@ -776,7 +764,7 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
             notClosed = lexemes.currentChar != Lexer.CHAR_RIGHT_SQUARE_BRACKET
         }
         if (notClosed) {
-            throw PatternSyntaxException()
+            throw PatternSyntaxException("Missing ']'", pattern, lexemes.curTokenIndex)
         }
         if (buffer >= 0) {
             result.add(buffer)
@@ -786,13 +774,13 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
 
     private fun processRangeSet(charClass: AbstractCharClass): AbstractSet {
         if (charClass.hasLowHighSurrogates()) {
-            val lowHighSurrRangeSet = SurrogateRangeSet(charClass.surrogates)
+            val lowHighSurrRangeSet = SurrogateRangeSet(charClass.classWithSurrogates())
 
             if (charClass.mayContainSupplCodepoints) {
-                return CompositeRangeSet(SupplementaryRangeSet(charClass.withoutSurrogates, hasFlag(CASE_INSENSITIVE)), lowHighSurrRangeSet)
+                return CompositeRangeSet(SupplementaryRangeSet(charClass.classWithoutSurrogates(), hasFlag(CASE_INSENSITIVE)), lowHighSurrRangeSet)
             }
 
-            return CompositeRangeSet(RangeSet(charClass.withoutSurrogates, hasFlag(CASE_INSENSITIVE)), lowHighSurrRangeSet)
+            return CompositeRangeSet(RangeSet(charClass.classWithoutSurrogates(), hasFlag(CASE_INSENSITIVE)), lowHighSurrRangeSet)
         }
 
         if (charClass.mayContainSupplCodepoints) {
@@ -806,7 +794,7 @@ internal class Pattern(val pattern: String, flags: Int = 0) {
         val isSupplCodePoint = Char.isSupplementaryCodePoint(ch)
 
         return when {
-            isSupplCodePoint -> SequenceSet(fromCharArray(Char.toChars(ch), 0, 2), hasFlag(CASE_INSENSITIVE))
+            isSupplCodePoint -> SequenceSet(String(Char.toChars(ch), 0, 2), hasFlag(CASE_INSENSITIVE))
             ch.toChar().isLowSurrogate() ->  LowSurrogateCharSet(ch.toChar())
             ch.toChar().isHighSurrogate() -> HighSurrogateCharSet(ch.toChar())
             else -> CharSet(ch.toChar(), hasFlag(CASE_INSENSITIVE))
