@@ -1,3 +1,45 @@
+# v1.3.50 (Aug 2019)
+  * Kotlin/Native versioning now aligned with Kotlin versioning
+  * Exhaustive platform libraries on macOS (GH-3141)
+  * Update to Gradle 5.5 (GH-3166)
+  * Improved debug information correctness (GH-3130)
+  * Major memory manager refactoring (GH-3129)
+  * Embed actual bitcode in produced frameworks (GH-2974)
+  * Compilation speed improvements
+  * Interop:
+    * Support kotlin.Deprecated when producing framework (GH-3114)
+    * Ensure produced Objective-C header does not have warnings (GH-3101)
+    * Speed up interop stub generator (GH-3082, GH-3050)
+    * getOriginalKotlinClass() to get KClass for Kotlin classes in Objective-C (GH-3036)
+    * Implement ObjCExportLazy (GH-2990)
+  * Standard library
+    * API for delayed job execution on worker (GH-2971)
+    * API for running via worker's job queue (GH-3078)
+    * MonoClock and Duration support (GH-3028)
+    * Support typeOf (KT-29917, KT-28625)
+
+# v1.3.0 (Jun 2019)
+  * CoreLocation platform library on macOS (GH-3041)
+  * Converting Unit type to Void during producing framework for Objective-C/Swift (GH-2549, GH-1271)
+  * Support linux/arm64 targets (GH-2917)
+  * Performance improvements of memory manager (GH-2813)
+  * FreezableAtomicReference prototype (GH-2776)
+  * Logging and error messages enhancements 
+  * Interop:
+    * Support nullable String return type in reverse C interop (GH-2956)
+    * Support setting custom exception hook in reverse C interop (GH-2941)
+    * Experimental generics support for produced frameworks for Objective-C/Swift implemented by Kevin Galligan (GH-2850)
+    * Improve support for Objective-C methods clashing with methods of Any (GH-2914)
+    * Support variadic Objective-C functions (GH-2896)
+
+# v1.2.1 (Apr 2019)
+  * Fix Objective-C interop with React (GH-2872)
+  * Fix “not in vtable” compiler crash when generating frameworks (GH-2865)
+  * Implement some optimizations (GH-2854)
+  * Fix release build for 32-bit Windows (GH-2848)
+  * Fix casts to type parameters with multiple bounds (GH-2888)
+  * Fix “could not get descriptor uniq id for deserialized class FlagEnum” compiler crash when generating framework (GH-2874)
+
 # v1.2.0 (Apr 2019)
   * New intermediate representation based library format allowing global optimizations
   * Exception backtraces in debug mode on macOS and iOS targets contains symbolic information

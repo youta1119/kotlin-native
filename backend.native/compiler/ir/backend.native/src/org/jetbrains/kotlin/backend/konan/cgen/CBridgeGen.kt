@@ -12,14 +12,12 @@ import org.jetbrains.kotlin.backend.common.lower.at
 import org.jetbrains.kotlin.backend.common.lower.irNot
 import org.jetbrains.kotlin.backend.konan.PrimitiveBinaryType
 import org.jetbrains.kotlin.backend.konan.RuntimeNames
-import org.jetbrains.kotlin.backend.konan.descriptors.createAnnotation
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.isObjCMetaClass
 import org.jetbrains.kotlin.builtins.UnsignedType
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
-import org.jetbrains.kotlin.descriptors.annotations.Annotations
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
@@ -225,7 +223,7 @@ private fun KotlinToCCallBuilder.unwrapVariadicArguments(
                 }
             } else {
                 stubs.reportError(it, "When calling variadic " +
-                        if (isObjCMethod) "Objective-C methods" else "C functions " +
+                        (if (isObjCMethod) "Objective-C methods " else "C functions ") +
                                 "spread operator is supported only for *arrayOf(...)")
             }
         }
@@ -299,19 +297,19 @@ internal fun KotlinStubs.generateObjCCall(
         superQualifier: IrClassSymbol?,
         receiver: IrExpression,
         arguments: List<IrExpression?>
-): IrExpression {
+) = builder.irBlock {
+    val callBuilder = KotlinToCCallBuilder(builder, this@generateObjCCall, isObjCMethod = true)
 
-    val callBuilder = KotlinToCCallBuilder(builder, this, isObjCMethod = true)
+    val superClass = irTemporaryVar(
+            superQualifier?.let { getObjCClass(symbols, it) } ?: irNullNativePtr(symbols)
+    )
 
-    val superClass = superQualifier?.let { builder.getObjCClass(symbols, it) }
-            ?: builder.irNullNativePtr(symbols)
-
-    val messenger = builder.irCall(if (isStret) {
+    val messenger = irCall(if (isStret) {
         symbols.interopGetMessengerStret
     } else {
         symbols.interopGetMessenger
     }.owner).apply {
-        putValueArgument(0, superClass) // TODO: check superClass statically.
+        putValueArgument(0, irGet(superClass)) // TODO: check superClass statically.
     }
 
     val targetPtrParameter = callBuilder.passThroughBridge(
@@ -322,7 +320,7 @@ internal fun KotlinStubs.generateObjCCall(
     val targetFunctionName = "targetPtr"
 
     val preparedReceiver = if (method.consumesReceiver()) {
-        builder.irCall(symbols.interopObjCRetain.owner).apply {
+        irCall(symbols.interopObjCRetain.owner).apply {
             putValueArgument(0, receiver)
         }
     } else {
@@ -330,9 +328,9 @@ internal fun KotlinStubs.generateObjCCall(
     }
 
     val receiverOrSuper = if (superQualifier != null) {
-        builder.irCall(symbols.interopCreateObjCSuperStruct.owner).apply {
+        irCall(symbols.interopCreateObjCSuperStruct.owner).apply {
             putValueArgument(0, preparedReceiver)
-            putValueArgument(1, superClass)
+            putValueArgument(1, irGet(superClass))
         }
     } else {
         preparedReceiver
@@ -357,7 +355,7 @@ internal fun KotlinStubs.generateObjCCall(
 
     callBuilder.emitCBridge()
 
-    return result
+    +result
 }
 
 private fun IrBuilderWithScope.getObjCClass(symbols: KonanSymbols, symbol: IrClassSymbol): IrExpression {
@@ -534,19 +532,7 @@ private fun KotlinStubs.createFakeKotlinExternalFunction(
         cFunctionName: String,
         isObjCMethod: Boolean
 ): IrSimpleFunction {
-    val objCMethodImpAnnotation = if (isObjCMethod) {
-        val methodInfo = signature.getObjCMethodInfo()!!
-        createObjCMethodImpAnnotation(methodInfo.selector, methodInfo.encoding, symbols)
-    } else {
-        null
-    }
-    val bridgeAnnotations = Annotations.create(
-            listOfNotNull(
-                    createAnnotation(symbols.symbolName.descriptor, "value" to cFunctionName),
-                    objCMethodImpAnnotation
-            )
-    )
-    val bridgeDescriptor = WrappedSimpleFunctionDescriptor(bridgeAnnotations)
+    val bridgeDescriptor = WrappedSimpleFunctionDescriptor()
     val bridge = IrFunctionImpl(
             UNDEFINED_OFFSET,
             UNDEFINED_OFFSET,
@@ -563,11 +549,17 @@ private fun KotlinStubs.createFakeKotlinExternalFunction(
     )
     bridgeDescriptor.bind(bridge)
 
+    bridge.annotations += buildSimpleAnnotation(irBuiltIns, UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+            symbols.symbolName.owner, cFunctionName)
+
+    if (isObjCMethod) {
+        val methodInfo = signature.getObjCMethodInfo()!!
+        bridge.annotations += buildSimpleAnnotation(irBuiltIns, UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+                symbols.objCMethodImp.owner, methodInfo.selector, methodInfo.encoding)
+    }
+
     return bridge
 }
-
-private fun createObjCMethodImpAnnotation(selector: String, encoding: String, symbols: KonanSymbols) =
-        createAnnotation(symbols.objCMethodImp.descriptor, "selector" to selector, "encoding" to encoding)
 
 private val cCall = RuntimeNames.cCall
 
@@ -589,11 +581,9 @@ private fun IrType.isCEnumType(): Boolean {
             .any { (it.classifierOrNull?.owner as? IrClass)?.fqNameForIrSerialization == FqName("kotlinx.cinterop.CEnum") }
 }
 
-// TODO: get rid of consulting descriptors for annotations.
 // Make sure external stubs always get proper annotaions.
 private fun IrDeclaration.hasCCallAnnotation(name: String): Boolean =
-        this.annotations.hasAnnotation(cCall.child(Name.identifier(name))) ||
-                this.descriptor.annotations.hasAnnotation(cCall.child(Name.identifier(name)))
+        this.annotations.hasAnnotation(cCall.child(Name.identifier(name)))
 
 
 private fun IrValueParameter.isWCStringParameter() = hasCCallAnnotation("WCString")
@@ -1178,7 +1168,6 @@ private class ObjCBlockPointerValuePassing(
                 Name.identifier("blockHolder"),
                 isMutable = false, owner = irClass
         )
-        irClass.addChild(blockHolderField)
 
         val constructorDescriptor = WrappedClassConstructorDescriptor()
         val constructor = IrConstructorImpl(

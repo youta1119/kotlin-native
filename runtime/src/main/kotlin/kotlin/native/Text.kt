@@ -5,11 +5,15 @@
 
 package kotlin.native
 
+import kotlinx.cinterop.toKString
 
 /**
  * Converts an UTF-8 array into a [String]. Replaces invalid input sequences with a default character.
  */
-@Deprecated("Use decodeToString instead", ReplaceWith("decodeToString()"))
+@Deprecated(
+        "Use toKString or decodeToString instead",
+        ReplaceWith("toKString()", "kotlinx.cinterop.toKString")
+)
 public fun ByteArray.stringFromUtf8() : String {
     @Suppress("DEPRECATION")
     return this.stringFromUtf8(0, this.size)
@@ -18,20 +22,22 @@ public fun ByteArray.stringFromUtf8() : String {
 /**
  * Converts an UTF-8 array into a [String]. Replaces invalid input sequences with a default character.
  */
-@Deprecated("Use decodeToString instead", ReplaceWith("decodeToString(start, start + size)"))
+@Deprecated(
+        "Use toKString or decodeToString instead",
+        ReplaceWith("toKString(start, start + size)", "kotlinx.cinterop.toKString")
+)
 public fun ByteArray.stringFromUtf8(start: Int = 0, size: Int = this.size) : String {
-    checkBoundsIndexes(start, start + size, this.size)
-    return stringFromUtf8Impl(start, size)
+    return toKString(start, start + size)
 }
-
-@SymbolName("Kotlin_ByteArray_stringFromUtf8")
-internal external fun ByteArray.stringFromUtf8Impl(start: Int, size: Int) : String
 
 /**
  * Converts an UTF-8 array into a [String].
  * @throws [IllegalCharacterConversionException] if the input is invalid.
  */
-@Deprecated("Use decodeToString instead", ReplaceWith("decodeToString(throwOnInvalidSequence = true)"))
+@Deprecated(
+        "Use toKString or decodeToString instead",
+        ReplaceWith("toKString(throwOnInvalidSequence = true)", "kotlinx.cinterop.toKString")
+)
 public fun ByteArray.stringFromUtf8OrThrow() : String {
     @Suppress("DEPRECATION")
     return this.stringFromUtf8OrThrow(0, this.size)
@@ -41,19 +47,18 @@ public fun ByteArray.stringFromUtf8OrThrow() : String {
  * Converts an UTF-8 array into a [String].
  * @throws [IllegalCharacterConversionException] if the input is invalid.
  */
-@Deprecated("Use decodeToString instead", ReplaceWith("decodeToString(start, start + size, throwOnInvalidSequence = true)"))
+@Deprecated(
+        "Use toKString or decodeToString instead",
+        ReplaceWith("toKString(start, start + size, throwOnInvalidSequence = true)", "kotlinx.cinterop.toKString")
+)
 public fun ByteArray.stringFromUtf8OrThrow(start: Int = 0, size: Int = this.size) : String {
-    checkBoundsIndexes(start, start + size, this.size)
     try {
-        return stringFromUtf8OrThrowImpl(start, size)
+        return toKString(start, start + size, throwOnInvalidSequence = true)
     } catch (e: CharacterCodingException) {
         @Suppress("DEPRECATION")
         throw IllegalCharacterConversionException()
     }
 }
-
-@SymbolName("Kotlin_ByteArray_stringFromUtf8OrThrow")
-internal external fun ByteArray.stringFromUtf8OrThrowImpl(start: Int, size: Int) : String
 
 /**
  * Converts a [String] into an UTF-8 array. Replaces invalid input sequences with a default character.
@@ -70,11 +75,8 @@ public fun String.toUtf8() : ByteArray {
 @Deprecated("Use encodeToByteArray instead", ReplaceWith("encodeToByteArray(start, start + size)"))
 public fun String.toUtf8(start: Int = 0, size: Int = this.length) : ByteArray {
     checkBoundsIndexes(start, start + size, this.length)
-    return toUtf8Impl(start, size)
+    return unsafeStringToUtf8(start, size)
 }
-
-@SymbolName("Kotlin_String_toUtf8")
-internal external fun String.toUtf8Impl(start: Int, size: Int) : ByteArray
 
 /**
  * Converts a [String] into an UTF-8 array.
@@ -94,7 +96,7 @@ public fun String.toUtf8OrThrow() : ByteArray {
 public fun String.toUtf8OrThrow(start: Int = 0, size: Int = this.length) : ByteArray {
     checkBoundsIndexes(start, start + size, this.length)
     try {
-        return toUtf8OrThrowImpl(start, size)
+        return unsafeStringToUtf8OrThrow(start, size)
     } catch (e: CharacterCodingException) {
         @Suppress("DEPRECATION")
         throw IllegalCharacterConversionException()
@@ -110,14 +112,26 @@ internal fun checkBoundsIndexes(startIndex: Int, endIndex: Int, size: Int) {
     }
 }
 
-@SymbolName("Kotlin_String_toUtf8OrThrow")
-internal external fun String.toUtf8OrThrowImpl(start: Int, size: Int) : ByteArray
+internal fun insertString(array: CharArray, start: Int, value: String): Int =
+        insertString(array, start, value, 0, value.length)
 
-@SymbolName("Kotlin_String_fromCharArray")
-internal external fun fromCharArray(array: CharArray, start: Int, size: Int) : String
+@SymbolName("Kotlin_ByteArray_unsafeStringFromUtf8")
+internal external fun ByteArray.unsafeStringFromUtf8(start: Int, size: Int) : String
+
+@SymbolName("Kotlin_ByteArray_unsafeStringFromUtf8OrThrow")
+internal external fun ByteArray.unsafeStringFromUtf8OrThrow(start: Int, size: Int) : String
+
+@SymbolName("Kotlin_String_unsafeStringToUtf8")
+internal external fun String.unsafeStringToUtf8(start: Int, size: Int) : ByteArray
+
+@SymbolName("Kotlin_String_unsafeStringToUtf8OrThrow")
+internal external fun String.unsafeStringToUtf8OrThrow(start: Int, size: Int) : ByteArray
+
+@SymbolName("Kotlin_String_unsafeStringFromCharArray")
+internal external fun unsafeStringFromCharArray(array: CharArray, start: Int, size: Int) : String
 
 @SymbolName("Kotlin_StringBuilder_insertString")
-internal external fun insertString(array: CharArray, start: Int, value: String): Int
+internal external fun insertString(array: CharArray, distIndex: Int, value: String, sourceIndex: Int, count: Int): Int
 
 @SymbolName("Kotlin_StringBuilder_insertInt")
 internal external fun insertInt(array: CharArray, start: Int, value: Int): Int

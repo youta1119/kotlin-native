@@ -14,7 +14,6 @@ import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.common.pop
 import org.jetbrains.kotlin.backend.common.push
-import org.jetbrains.kotlin.backend.konan.ir.fqNameForIrSerialization
 import org.jetbrains.kotlin.backend.konan.ir.isFunctionOrKFunctionType
 import org.jetbrains.kotlin.backend.konan.llvm.functionName
 import org.jetbrains.kotlin.descriptors.*
@@ -39,6 +38,8 @@ import org.jetbrains.kotlin.name.Name
 internal class CallableReferenceLowering(val context: Context): FileLoweringPass {
 
     private object DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL : IrDeclarationOriginImpl("FUNCTION_REFERENCE_IMPL")
+
+    private val kTypeGenerator = KTypeGenerator(context)
 
     override fun lower(irFile: IrFile) {
         var generatedClasses = mutableListOf<IrClass>()
@@ -93,11 +94,10 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                     if (cur !is IrCall)
                         break
                     val argument = if (i < stack.size - 1) stack[i + 1] else expression
-                    val descriptor = cur.descriptor
-                    val argumentDescriptor = descriptor.valueParameters.singleOrNull {
+                    val parameter = cur.symbol.owner.valueParameters.singleOrNull {
                         cur.getValueArgument(it.index) == argument
                     }
-                    if (argumentDescriptor?.annotations?.findAnnotation(VOLATILE_LAMBDA_FQ_NAME) != null) {
+                    if (parameter?.annotations?.findAnnotation(VOLATILE_LAMBDA_FQ_NAME) != null) {
                         return expression
                     }
                     break
@@ -266,7 +266,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                         val needReceiver = boundFunctionParameters.singleOrNull()?.descriptor is ReceiverParameterDescriptor
                         val receiver = if (needReceiver) irGet(valueParameters.single()) else irNull()
                         putValueArgument(3, receiver)
-                        putValueArgument(4, irKType(this@CallableReferenceLowering.context, referencedFunction.returnType))
+                        putValueArgument(4, with(kTypeGenerator) { irKType(referencedFunction.returnType) })
                     }
                     +IrInstanceInitializerCallImpl(startOffset, endOffset, functionReferenceClass.symbol, irBuiltIns.unitType)
                     // Save all arguments to fields.

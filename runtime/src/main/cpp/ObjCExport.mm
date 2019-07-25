@@ -110,7 +110,7 @@ inline static OBJ_GETTER(AllocInstanceWithAssociatedObject, const TypeInfo* type
 }
 
 extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
-                            const TypeInfo* typeInfo, id associatedObject) RUNTIME_NOTHROW;
+                      const TypeInfo* typeInfo, id associatedObject) RUNTIME_NOTHROW;
 
 extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
                             const TypeInfo* typeInfo, id associatedObject) {

@@ -22,9 +22,10 @@ import org.jetbrains.kotlin.konan.library.libraryResolver
 import org.jetbrains.kotlin.konan.properties.loadProperties
 import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
-import org.jetbrains.kotlin.konan.library.toUnresolvedLibraries
 import org.jetbrains.kotlin.konan.util.Logger
 import kotlin.system.exitProcess
+import org.jetbrains.kotlin.library.toUnresolvedLibraries
+import org.jetbrains.kotlin.konan.KonanVersion
 
 class KonanConfig(val project: Project, val configuration: CompilerConfiguration) {
 
@@ -44,6 +45,13 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
     val infoArgsOnly = configuration.kotlinSourceRoots.isEmpty() && !linkOnly
 
     val debug: Boolean get() = configuration.getBoolean(KonanConfigKeys.DEBUG)
+
+    val memoryModel: MemoryModel get() = configuration.get(KonanConfigKeys.MEMORY_MODEL)!!
+
+    val needCompilerVerification: Boolean
+        get() = configuration.get(KonanConfigKeys.VERIFY_COMPILER) ?:
+            (configuration.getBoolean(KonanConfigKeys.OPTIMIZATION) ||
+                KonanVersion.CURRENT.meta != MetaVersion.RELEASE)
 
     init {
         if (!platformManager.isEnabled(target)) {
@@ -103,7 +111,7 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
         libraryNames.filter { it.contains(File.separator) },
         target,
         distribution,
-        compatibleCompilerVersions + KonanVersion.CURRENT,
+        compatibleCompilerVersions,
         resolverLogger
     ).libraryResolver()
 
@@ -125,6 +133,7 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     internal val defaultNativeLibraries: List<String> = mutableListOf<String>().apply {
         add(if (debug) "debug.bc" else "release.bc")
+        add(if (memoryModel == MemoryModel.STRICT) "strict.bc" else "relaxed.bc")
         if (produce == CompilerOutputKind.PROGRAM) {
             addAll(distribution.launcherFiles)
         }

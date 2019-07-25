@@ -10,14 +10,19 @@ import org.jetbrains.kotlin.name.FqNameUnsafe
 import org.jetbrains.kotlin.name.Name
 
 internal const val NATIVE_PTR_NAME = "NativePtr"
+internal const val NON_NULL_NATIVE_PTR_NAME = "NonNullNativePtr"
 
 object KonanFqNames {
-
     val packageName = FqName("kotlin.native")
     val internalPackageName = FqName("kotlin.native.internal")
     val nativePtr = internalPackageName.child(Name.identifier(NATIVE_PTR_NAME)).toUnsafe()
-    val nonNullNativePtr = FqNameUnsafe("kotlin.native.internal.NonNullNativePtr")
+    val nonNullNativePtr = internalPackageName.child(Name.identifier(NON_NULL_NATIVE_PTR_NAME)).toUnsafe()
     val throws = FqName("kotlin.native.Throws")
+    val threadLocal = FqName("kotlin.native.concurrent.ThreadLocal")
+    val sharedImmutable = FqName("kotlin.native.concurrent.SharedImmutable")
+    val frozen = FqName("kotlin.native.internal.Frozen")
+    val typedIntrinsic = FqName("kotlin.native.internal.TypedIntrinsic")
+    val objCMethod = FqName("kotlinx.cinterop.ObjCMethod")
 }
 
 /**

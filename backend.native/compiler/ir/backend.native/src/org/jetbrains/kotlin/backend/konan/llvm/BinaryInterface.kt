@@ -6,29 +6,23 @@
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.LLVMTypeRef
-import org.jetbrains.kotlin.backend.common.serialization.KotlinMangler
 import org.jetbrains.kotlin.backend.common.serialization.KotlinManglerImpl
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.externalSymbolOrThrow
 import org.jetbrains.kotlin.backend.konan.descriptors.getAnnotationValue
 import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
-import org.jetbrains.kotlin.backend.konan.ir.*
+import org.jetbrains.kotlin.backend.konan.ir.allParameters
+import org.jetbrains.kotlin.backend.konan.ir.getObjCMethodInfo
+import org.jetbrains.kotlin.backend.konan.ir.isObjCClassMethod
+import org.jetbrains.kotlin.backend.konan.ir.isUnit
 import org.jetbrains.kotlin.backend.konan.llvm.KonanMangler.isExported
-import org.jetbrains.kotlin.konan.library.KonanLibrary
-import org.jetbrains.kotlin.backend.konan.optimizations.DataFlowIR
-import org.jetbrains.kotlin.descriptors.ModuleDescriptor
-import org.jetbrains.kotlin.descriptors.PropertyAccessorDescriptor
-import org.jetbrains.kotlin.descriptors.Visibilities
-import org.jetbrains.kotlin.descriptors.Visibility
 import org.jetbrains.kotlin.ir.declarations.*
-import org.jetbrains.kotlin.ir.symbols.IrTypeParameterSymbol
 import org.jetbrains.kotlin.ir.types.*
-import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
-import org.jetbrains.kotlin.ir.util.isSuspend
-import org.jetbrains.kotlin.ir.util.isVararg
-import org.jetbrains.kotlin.konan.library.uniqueName
-import org.jetbrains.kotlin.name.FqName
-import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.ir.types.getClass
+import org.jetbrains.kotlin.backend.konan.isInlinedNative
+import org.jetbrains.kotlin.ir.util.*
+import org.jetbrains.kotlin.konan.library.KonanLibrary
+import org.jetbrains.kotlin.library.uniqueName
 
 
 // This file describes the ABI for Kotlin descriptors of exported declarations.
@@ -37,7 +31,8 @@ import org.jetbrains.kotlin.name.Name
 
 object KonanMangler : KotlinManglerImpl() {
 
-    override val String.hashMangle get() = this.localHash.value
+    override val IrType.isInlined
+        get() = this.isInlinedNative()
 
     /**
      * Defines whether the declaration is exported, i.e. visible from other modules.
@@ -48,34 +43,24 @@ object KonanMangler : KotlinManglerImpl() {
      */
     override fun IrDeclaration.isPlatformSpecificExported(): Boolean {
         // TODO: revise
-        val descriptorAnnotations = this.descriptor.annotations
-        if (descriptorAnnotations.hasAnnotation(symbolNameAnnotation)) {
+        if (annotations.hasAnnotation(RuntimeNames.symbolNameAnnotation)) {
             // Treat any `@SymbolName` declaration as exported.
             return true
         }
-        if (descriptorAnnotations.hasAnnotation(exportForCppRuntimeAnnotation)) {
+        if (annotations.hasAnnotation(RuntimeNames.exportForCppRuntime)) {
             // Treat any `@ExportForCppRuntime` declaration as exported.
             return true
         }
-        if (descriptorAnnotations.hasAnnotation(cnameAnnotation)) {
+        if (annotations.hasAnnotation(RuntimeNames.cnameAnnotation)) {
             // Treat `@CName` declaration as exported.
             return true
         }
-        if (descriptorAnnotations.hasAnnotation(exportForCompilerAnnotation)) {
+        if (annotations.hasAnnotation(RuntimeNames.exportForCompilerAnnotation)) {
             return true
         }
 
         return false
     }
-
-    private val symbolNameAnnotation = RuntimeNames.symbolName
-
-    private val cnameAnnotation = FqName("kotlin.native.CName")
-
-    private val exportForCppRuntimeAnnotation = RuntimeNames.exportForCppRuntime
-
-    private val exportForCompilerAnnotation = RuntimeNames.exportForCompilerAnnotation
-
 
     override val IrFunction.argsPart get() = this.valueParameters.map {
 
@@ -119,13 +104,13 @@ object KonanMangler : KotlinManglerImpl() {
             }
 
             if (isExternal) {
-                this.descriptor.externalSymbolOrThrow()?.let {
+                this.externalSymbolOrThrow()?.let {
                     return it
                 }
             }
 
-            this.descriptor.annotations.findAnnotation(exportForCppRuntimeAnnotation)?.let {
-                val name = getAnnotationValue(it) ?: this.name.asString()
+            this.annotations.findAnnotation(RuntimeNames.exportForCppRuntime)?.let {
+                val name = it.getAnnotationValue() ?: this.name.asString()
                 return name // no wrapping currently required
             }
 
@@ -143,8 +128,6 @@ internal val IrClass.writableTypeInfoSymbolName: String
         assert (this.isExported())
         return "ktypew:" + this.fqNameForIrSerialization.toString()
     }
-
-internal val theUnitInstanceName = "kobj:kotlin.Unit"
 
 internal val IrClass.objectInstanceFieldSymbolName: String
     get() {
@@ -190,20 +173,8 @@ internal fun RuntimeAware.getLlvmFunctionType(function: IrFunction): LLVMTypeRef
     return functionType(returnType, isVarArg = false, paramTypes = *paramTypes.toTypedArray())
 }
 
-internal fun RuntimeAware.getLlvmFunctionType(symbol: DataFlowIR.FunctionSymbol): LLVMTypeRef {
-    val returnType = if (symbol.returnsUnit) voidType else getLLVMType(symbol.returnParameter.type)
-    val paramTypes = ArrayList(symbol.parameters.map { getLLVMType(it.type) })
-    if (isObjectType(returnType)) paramTypes.add(kObjHeaderPtrPtr)
-
-    return functionType(returnType, isVarArg = false, paramTypes = *paramTypes.toTypedArray())
-}
-
 internal val IrClass.typeInfoHasVtableAttached: Boolean
     get() = !this.isAbstract() && !this.isExternalObjCClass()
-
-internal fun ModuleDescriptor.privateFunctionSymbolName(index: Int, functionName: String?) = "private_functions_${name.asString()}_${functionName}_$index"
-
-internal fun ModuleDescriptor.privateClassSymbolName(index: Int, className: String?) = "private_classes_${name.asString()}_${className}_$index"
 
 internal val String.moduleConstructorName
     get() = "_Konan_init_${this}"

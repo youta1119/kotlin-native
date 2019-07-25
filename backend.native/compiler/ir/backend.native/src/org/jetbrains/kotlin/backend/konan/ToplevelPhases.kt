@@ -1,33 +1,67 @@
 package org.jetbrains.kotlin.backend.konan
 
-import llvm.LLVMWriteBitcodeToFile
-import org.jetbrains.kotlin.backend.common.LoggingContext
+import org.jetbrains.kotlin.backend.common.*
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.phaser.*
+import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
-import org.jetbrains.kotlin.backend.konan.serialization.*
+import org.jetbrains.kotlin.backend.konan.serialization.KonanDeclarationTable
+import org.jetbrains.kotlin.backend.konan.serialization.KonanIrLinker
+import org.jetbrains.kotlin.backend.konan.serialization.KonanIrModuleSerializer
+import org.jetbrains.kotlin.backend.konan.serialization.KonanSerializationUtil
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
-import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
-import org.jetbrains.kotlin.backend.konan.library.impl.buildLibrary
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.util.SymbolTable
-import org.jetbrains.kotlin.ir.util.patchDeclarationParents
-import org.jetbrains.kotlin.konan.CURRENT
-import org.jetbrains.kotlin.konan.KonanAbiVersion
-import org.jetbrains.kotlin.konan.KonanVersion
-import org.jetbrains.kotlin.konan.library.KonanLibraryVersioning
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
 import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
 import java.util.Collections.emptySet
+
+internal fun moduleValidationCallback(state: ActionState, module: IrModuleFragment, context: Context) {
+    if (!context.config.needCompilerVerification) return
+
+    val validatorConfig = IrValidatorConfig(
+        abortOnError = false,
+        ensureAllNodesAreDifferent = true,
+        checkTypes = true,
+        checkDescriptors = false
+    )
+    try {
+        module.accept(IrValidator(context, validatorConfig), null)
+        module.accept(CheckDeclarationParentsVisitor, null)
+    } catch (t: Throwable) {
+        // TODO: Add reference to source.
+        if (validatorConfig.abortOnError)
+            throw IllegalStateException("Failed IR validation ${state.beforeOrAfter} ${state.phase}", t)
+        else context.reportCompilationWarning("[IR VALIDATION] ${state.beforeOrAfter} ${state.phase}: ${t.message}")
+    }
+}
+
+internal fun fileValidationCallback(state: ActionState, irFile: IrFile, context: Context) {
+    val validatorConfig = IrValidatorConfig(
+        abortOnError = false,
+        ensureAllNodesAreDifferent = true,
+        checkTypes = true,
+        checkDescriptors = false
+    )
+    try {
+        irFile.accept(IrValidator(context, validatorConfig), null)
+        irFile.accept(CheckDeclarationParentsVisitor, null)
+    } catch (t: Throwable) {
+        // TODO: Add reference to source.
+        if (validatorConfig.abortOnError)
+            throw IllegalStateException("Failed IR validation ${state.beforeOrAfter} ${state.phase}", t)
+        else context.reportCompilationWarning("[IR VALIDATION] ${state.beforeOrAfter} ${state.phase}: ${t.message}")
+    }
+}
 
 internal fun konanUnitPhase(
         name: String,
@@ -131,8 +165,6 @@ internal val psiToIrPhase = konanUnitPhase(
             irModule = module
             irModules = deserializer.modules
             ir.symbols = symbols
-
-//        validateIrModule(this, module)
         },
         name = "Psi2Ir",
         description = "Psi to IR conversion",
@@ -172,19 +204,12 @@ internal val copyDefaultValuesToActualPhase = konanUnitPhase(
         description = "Copy default values from expect to actual declarations"
 )
 
-internal val patchDeclarationParents0Phase = konanUnitPhase(
-        op = { irModule!!.patchDeclarationParents() }, // why do we need it?
-        name = "PatchDeclarationParents0",
-        description = "Patch declaration parents"
-)
-
 internal val serializerPhase = konanUnitPhase(
         op = {
             val declarationTable = KonanDeclarationTable(irModule!!.irBuiltins, DescriptorTable())
-            val serializedIr = KonanIrModuleSerializer(this, declarationTable).serializedIrModule(irModule!!)
+            serializedIr = KonanIrModuleSerializer(this, declarationTable).serializedIrModule(irModule!!)
             val serializer = KonanSerializationUtil(this, config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!, declarationTable)
-            serializedLinkData =
-                    serializer.serializeModule(moduleDescriptor, /*if (!config.isInteropStubs) serializedIr else null*/ serializedIr)
+            serializedMetadata = serializer.serializeModule(moduleDescriptor)
         },
         name = "Serializer",
         description = "Serialize descriptor tree and inline IR bodies"
@@ -217,7 +242,6 @@ internal val allLoweringsPhase = namedIrModulePhase(
                 inlinePhase then
                 lowerAfterInlinePhase then
                 interopPart1Phase then
-                patchDeclarationParents1Phase then
                 performByIrFile(
                         name = "IrLowerByFile",
                         description = "IR Lowering by file",
@@ -246,9 +270,8 @@ internal val allLoweringsPhase = namedIrModulePhase(
                                 bridgesPhase then
                                 autoboxPhase then
                                 returnsInsertionPhase
-                ) then
-                checkDeclarationParentsPhase
-//                                                validateIrModulePhase // Temporarily disabled until moving to new IR finished.
+                ),
+        actions = setOf(defaultDumper, ::moduleValidationCallback)
 )
 
 internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
@@ -291,13 +314,14 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
 internal val bitcodePhase = namedIrModulePhase(
         name = "Bitcode",
         description = "LLVM Bitcode generation",
-        lower = contextLLVMSetupPhase then
-                RTTIPhase then
-                generateDebugInfoHeaderPhase then
-                buildDFGPhase then
+        lower = buildDFGPhase then
                 serializeDFGPhase then
                 deserializeDFGPhase then
                 devirtualizationPhase then
+                dcePhase then
+                contextLLVMSetupPhase then
+                RTTIPhase then
+                generateDebugInfoHeaderPhase then
                 escapeAnalysisPhase then
                 codegenPhase then
                 finalizeDebugInfoPhase then
@@ -316,7 +340,6 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                 destroySymbolTablePhase then
                 irGeneratorPluginsPhase then
                 copyDefaultValuesToActualPhase then
-                patchDeclarationParents0Phase then
                 serializerPhase then
                 namedUnitPhase(
                         name = "Backend",
@@ -347,5 +370,9 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         switch(bitcodePhase, config.produce != CompilerOutputKind.LIBRARY)
         switch(linkPhase, config.produce.isNativeBinary)
         switch(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) != TestRunnerKind.NONE)
+        switch(buildDFGPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        switch(devirtualizationPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        switch(dcePhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        switch(verifyBitcodePhase, config.needCompilerVerification || config.configuration.getBoolean(KonanConfigKeys.VERIFY_BITCODE))
     }
 }

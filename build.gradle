@@ -17,17 +17,22 @@ import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.konan.util.*
 import org.jetbrains.kotlin.CopySamples
 import org.jetbrains.kotlin.CopyCommonSources
-import org.jetbrains.kotlin.konan.*
+import org.jetbrains.kotlin.PlatformInfo
+import org.jetbrains.kotlin.KotlinBuildPusher
 
 buildscript {
     apply from: "gradle/kotlinGradlePlugin.gradle"
 
     repositories {
         maven { url kotlinCompilerRepo }
+        maven { url "https://kotlin.bintray.com/kotlinx" }
+        maven { url "https://cache-redirector.jetbrains.com/maven-central" }
     }
 
     dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion"
         classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
+        classpath "org.jetbrains.kotlin:kotlin-native-build-tools:$konanVersion"
     }
 }
 import org.jetbrains.kotlin.konan.*
@@ -36,12 +41,12 @@ import org.jetbrains.kotlin.konan.*
 // Run './gradlew wrapper --gradle-version <version>' to update all the wrappers.
 apply plugin: org.jetbrains.kotlin.GradleWrappers
 
-wrappers.projects = ['samples', 'samples/calculator', 'samples/androidNativeActivity', 'samples/curl']
+wrappers.projects = ['samples', 'samples/calculator', 'samples/androidNativeActivity', 'samples/cocoapods/kotlin-library']
 wrapper.distributionType = Wrapper.DistributionType.ALL
 
 defaultTasks 'clean', 'dist'
 
-convention.plugins.platformInfo = new PlatformInfo()
+convention.plugins.platformInfo = PlatformInfo
 
 ext {
     distDir = file('dist')
@@ -58,14 +63,11 @@ ext {
     kotlinReflectModule="org.jetbrains.kotlin:kotlin-reflect:${kotlinVersion}"
     kotlinScriptRuntimeModule="org.jetbrains.kotlin:kotlin-script-runtime:${kotlinVersion}"
     kotlinNativeUtilsModule="org.jetbrains.kotlin:kotlin-native-utils:${kotlinVersion}"
+    kotlinUtilIoModule="org.jetbrains.kotlin:kotlin-util-io:${kotlinVersion}"
+    kotlinUtilKlibModule="org.jetbrains.kotlin:kotlin-util-klib:${kotlinVersion}"
 
     konanVersionFull = KonanVersionGeneratedKt.getCurrentKonanVersion()
-
-    if (konanVersionFull.meta == MetaVersion.RELEASE) {
-        gradlePluginVersion = kotlinVersion
-    } else {
-        gradlePluginVersion = "$kotlinVersion-native-$konanVersionFull"
-    }
+    gradlePluginVersion = konanVersionFull
 }
 
 allprojects {
@@ -161,43 +163,6 @@ void loadCommandLineProperties() {
     ext.testTarget = project.hasProperty("test_target") ? ext.test_target : null
 }
 
-class PlatformInfo {
-    boolean isMac() {
-        return HostManager.hostIsMac
-    }
-
-    boolean isWindows() {
-        return HostManager.hostIsMingw
-    }
-
-    boolean isLinux() {
-        return HostManager.hostIsLinux
-    }
-
-    boolean isAppleTarget(Project project) {
-        def target = getTarget(project)
-        return target.family == Family.IOS || target.family == Family.OSX
-    }
-
-    boolean isWindowsTarget(Project project) {
-        return getTarget(project).family == Family.MINGW
-    }
-
-    boolean isWasmTarget(Project project) {
-        return getTarget(project).family == Family.WASM
-    }
-
-    KonanTarget getTarget(Project project) {
-        def platformManager = project.rootProject.platformManager
-        def targetName = project.project.testTarget ?: 'host'
-        return platformManager.targetManager(targetName).target
-    }
-
-    Throwable unsupportedPlatformException() {
-        return new TargetSupportException()
-    }
-}
-
 configurations {
     ftpAntTask
     kotlinCommonSources
@@ -220,14 +185,6 @@ task gradlePluginJar {
 
 task gradlePluginCheck {
     dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':check')
-}
-
-task gradlePluginUpload {
-    dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':bintrayUpload')
-    // Publish releases to the plugin-portal too.
-    if (konanVersionFull.meta == MetaVersion.RELEASE) {
-        dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':publishPlugins')
-    }
 }
 
 task dist_compiler(dependsOn: "distCompiler")
@@ -269,6 +226,7 @@ task distCompiler(type: Copy) {
     dependsOn ':utilities:jar'
     dependsOn ':klib:jar'
     dependsOn ':sharedJar'
+    dependsOn ':endorsedLibraries:jvmJar'
 
     destinationDir distDir
 
@@ -328,6 +286,10 @@ task distCompiler(type: Copy) {
         into('konan/lib')
     }
 
+    from(project(':endorsedLibraries:kliopt').file('build/libs')) {
+        into('konan/lib')
+    }
+
     from(file("${gradle.includedBuild('kotlin-native-shared').projectDir}/build/libs")) {
         into('konan/lib')
     }
@@ -343,7 +305,7 @@ task distCompiler(type: Copy) {
     from(file('cmd')) {
         fileMode(0755)
         into('bin')
-        if (!isWindows()) {
+        if (!PlatformInfo.isWindows()) {
             exclude('**/*.bat')
         }
     }
@@ -366,7 +328,13 @@ task distRuntime(type: Copy) {
     dependsOn('commonDistRuntime')
 }
 
+task distEndorsedLibraries {
+    dependsOn "${hostName}CrossDistEndorsedLibraries"
+}
+
 def stdlib = 'klib/common/stdlib'
+def endorsedLibs = 'klib/common/endorsedLibraries'
+def endorsedLibsBase = 'klib/common'
 
 task commonDistRuntime(type: Copy) {
     destinationDir distDir
@@ -381,6 +349,10 @@ task commonDistRuntime(type: Copy) {
 task crossDistRuntime(type: Copy) {
     dependsOn.addAll(targetList.collect { "${it}CrossDistRuntime" })
     dependsOn('commonDistRuntime')
+}
+
+task crossDistEndorsedLibraries(type: Copy) {
+    dependsOn.addAll(targetList.collect { "${it}CrossDistEndorsedLibraries" })
 }
 
 task crossDistPlatformLibs {
@@ -421,7 +393,17 @@ targetList.each { target ->
     }
 
     task("${target}CrossDist") {
-        dependsOn "${target}CrossDistRuntime", 'distCompiler', 'commonDistRuntime'
+        dependsOn "${target}CrossDistRuntime", 'distCompiler', 'commonDistRuntime', "${target}CrossDistEndorsedLibraries"
+    }
+
+    task("${target}CrossDistEndorsedLibraries", type: Copy) {
+        dependsOn ":endorsedLibraries:${target}EndorsedLibraries"
+
+        destinationDir distDir
+        from(project(':endorsedLibraries').file("build")) {
+            include('**')
+            into("$endorsedLibsBase")
+        }
     }
 }
 
@@ -430,17 +412,17 @@ task distPlatformLibs {
 }
 
 task dist {
-    dependsOn 'distCompiler', 'distRuntime'
+    dependsOn 'distCompiler', 'distRuntime', 'distEndorsedLibraries'
 }
 
 task crossDist {
-    dependsOn 'crossDistRuntime', 'distCompiler'
+    dependsOn 'crossDistRuntime', 'distCompiler', 'crossDistEndorsedLibraries'
 }
 
 task bundle(type: (isWindows()) ? Zip : Tar) {
-    dependsOn('crossDistPlatformLibs')
-    dependsOn('crossDist')
-    dependsOn('distSources')
+    if (isMac()) {
+      dependsOn('bundleRestricted')
+    }
     def simpleOsName = HostManager.simpleOsName()
     baseName = "kotlin-native-$simpleOsName-$konanVersionFull"
     from("$project.rootDir/dist") {
@@ -449,6 +431,36 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
         exclude 'klib/testLibrary'
         into baseName
     }
+    if (isWindows()) {
+        zip64 true
+    } else {
+        extension = 'tar.gz'
+        compression = Compression.GZIP
+    }
+}
+
+task bundleRestricted(type: Tar) {
+    def simpleOsName = HostManager.simpleOsName()
+    baseName = "kotlin-native-restricted-$simpleOsName-$konanVersionFull"
+    from("$project.rootDir/dist") {
+        include '**'
+        exclude 'dependencies'
+        exclude 'klib/testLibrary'
+        exclude 'klib/platform/macos_x64'
+        exclude 'klib/platform/ios_x64'
+        exclude 'klib/platform/ios_arm64'
+        exclude 'klib/platform/ios_arm32'
+        into baseName
+    }
+
+    extension = 'tar.gz'
+    compression = Compression.GZIP
+}
+
+configure([bundle, bundleRestricted]) {
+    dependsOn('crossDistPlatformLibs')
+    dependsOn('crossDist')
+    dependsOn('distSources')
     from(project.rootDir) {
         include 'DISTRO_README.md'
         rename {
@@ -466,13 +478,6 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
     }
 
     destinationDir = file('.')
-
-    if (isWindows()) {
-        zip64 true
-    } else {
-        extension = 'tar.gz'
-        compression = Compression.GZIP
-    }
 }
 
 task 'tc-dist'(type: (isWindows()) ? Zip : Tar) {
@@ -499,6 +504,12 @@ task 'tc-dist'(type: (isWindows()) ? Zip : Tar) {
 
 task samples {
     dependsOn 'samplesZip', 'samplesTar'
+}
+
+task performance {
+    dependsOn 'dist'
+    dependsOn ':performance:clean'
+    dependsOn ':performance:konanRun'
 }
 
 task samplesZip(type: Zip)
@@ -542,6 +553,9 @@ task copySamples(type: CopySamples) {
 
 task uploadBundle {
     dependsOn ':bundle'
+    if (isMac()) {
+        dependsOn ':bundleRestricted'
+    }
     doLast {
         def kind = (konanVersionFull.meta == MetaVersion.DEV) ? "dev" : "releases"
         def ftpSettings = [
@@ -558,15 +572,14 @@ task uploadBundle {
             ftp(ftpSettings) {
                 fileset(file: bundle.archivePath)
             }
+            if (isMac()) {
+                ftp(ftpSettings) {
+                    fileset(file: bundleRestricted.archivePath)
+                }
+            }
         }
     }
 }
-
-// TODO return when problems with HostManagers will be solved
-/*task performance {
-    dependsOn 'dist'
-    dependsOn ':performance:bench'
-}*/
 
 task teamcityKonanVersion {
     doLast {
@@ -583,4 +596,11 @@ task clean {
         delete distDir
         delete bundle.outputs.files
     }
+}
+
+task pusher(type:  KotlinBuildPusher){
+    kotlinVersion = project.kotlinVersion
+    konanVersion = KonanVersionGeneratedKt.getCurrentKonanVersion()
+    buildServer = "teamcity.jetbrains.com"
+    token = project.findProperty("teamcityBearToken") ?: System.getenv("TEAMCITY_BEAR_TOKEN")
 }

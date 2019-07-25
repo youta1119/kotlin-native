@@ -12,9 +12,7 @@ import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
-import org.jetbrains.kotlin.ir.declarations.IrClass
-import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
+import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
@@ -43,8 +41,11 @@ private fun KonanSymbols.getTypeConversionImpl(
     }?.symbol
 }
 
+internal object DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION : IrDeclarationOriginImpl("INLINE_CLASS_SPECIAL_FUNCTION")
+
 internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.lazyMapMember { inlinedClass ->
     assert(inlinedClass.isUsedAsBoxClass())
+    assert(inlinedClass.parent is IrFile) { "Expected top level inline class" }
 
     val symbols = ir.symbols
 
@@ -61,9 +62,9 @@ internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.la
     val descriptor = WrappedSimpleFunctionDescriptor()
     IrFunctionImpl(
             startOffset, endOffset,
-            IrDeclarationOrigin.DEFINED,
+            DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION,
             IrSimpleFunctionSymbolImpl(descriptor),
-            Name.special("<box>"),
+            Name.special("<${inlinedClass.name}-box>"),
             Visibilities.PUBLIC,
             Modality.FINAL,
             returnType,
@@ -89,12 +90,13 @@ internal val Context.getBoxFunction: (IrClass) -> IrSimpleFunction by Context.la
             }
         })
         descriptor.bind(function)
-        function.parent = inlinedClass
+        function.parent = inlinedClass.getContainingFile()!!
     }
 }
 
 internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.lazyMapMember { inlinedClass ->
     assert(inlinedClass.isUsedAsBoxClass())
+    assert(inlinedClass.parent is IrFile) { "Expected top level inline class" }
 
     val symbols = ir.symbols
 
@@ -111,9 +113,9 @@ internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.
     val descriptor = WrappedSimpleFunctionDescriptor()
     IrFunctionImpl(
             startOffset, endOffset,
-            IrDeclarationOrigin.DEFINED,
+            DECLARATION_ORIGIN_INLINE_CLASS_SPECIAL_FUNCTION,
             IrSimpleFunctionSymbolImpl(descriptor),
-            Name.special("<unbox>"),
+            Name.special("<${inlinedClass.name}-unbox>"),
             Visibilities.PUBLIC,
             Modality.FINAL,
             returnType,
@@ -139,7 +141,7 @@ internal val Context.getUnboxFunction: (IrClass) -> IrSimpleFunction by Context.
             }
         })
         descriptor.bind(function)
-        function.parent = inlinedClass
+        function.parent = inlinedClass.getContainingFile()!!
     }
 }
 

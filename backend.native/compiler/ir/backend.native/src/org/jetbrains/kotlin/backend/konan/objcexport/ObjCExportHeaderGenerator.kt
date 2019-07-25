@@ -17,6 +17,8 @@ import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.resolve.constants.ArrayValue
 import org.jetbrains.kotlin.resolve.constants.KClassValue
+import org.jetbrains.kotlin.resolve.deprecation.Deprecation
+import org.jetbrains.kotlin.resolve.deprecation.DeprecationLevelValue
 import org.jetbrains.kotlin.resolve.descriptorUtil.*
 import org.jetbrains.kotlin.resolve.scopes.MemberScope
 import org.jetbrains.kotlin.types.ErrorUtils
@@ -200,7 +202,7 @@ internal class ObjCExportTranslatorImpl(
             return builder.toString()
         }
 
-        assert(mapper.shouldBeExposed(descriptor))
+        assert(mapper.shouldBeExposed(descriptor)) { "Shouldn't be exposed: $descriptor" }
         assert(!descriptor.isInterface)
         generator?.requireClassOrInterface(descriptor)
 
@@ -211,7 +213,7 @@ internal class ObjCExportTranslatorImpl(
     }
 
     private fun referenceProtocol(descriptor: ClassDescriptor): ObjCExportNamer.ClassOrProtocolName {
-        assert(mapper.shouldBeExposed(descriptor))
+        assert(mapper.shouldBeExposed(descriptor)) { "Shouldn't be exposed: $descriptor" }
         assert(descriptor.isInterface)
         generator?.requireClassOrInterface(descriptor)
 
@@ -221,7 +223,7 @@ internal class ObjCExportTranslatorImpl(
     }
 
     private fun translateClassOrInterfaceName(descriptor: ClassDescriptor): ObjCExportNamer.ClassOrProtocolName {
-        assert(mapper.shouldBeExposed(descriptor))
+        assert(mapper.shouldBeExposed(descriptor)) { "Shouldn't be exposed: $descriptor" }
         if (ErrorUtils.isError(descriptor)) {
             return ObjCExportNamer.ClassOrProtocolName("ERROR", "ERROR")
         }
@@ -365,8 +367,7 @@ internal class ObjCExportTranslatorImpl(
                     ?.forEach {
                         val selector = getSelector(it)
                         if (selector !in presentConstructors) {
-                            val c = buildMethod(it, it, ObjCNoneExportScope)
-                            +ObjCMethod(c.descriptor, c.isInstanceMethod, c.returnType, c.selectors, c.parameters, c.attributes + "unavailable")
+                            +buildMethod(it, it, ObjCNoneExportScope, unavailable = true)
 
                             if (selector == "init") {
                                 +ObjCMethod(null, false, ObjCInstanceType, listOf("new"), emptyList(), listOf("unavailable"))
@@ -598,13 +599,21 @@ internal class ObjCExportTranslatorImpl(
         val getterSelector = getSelector(baseProperty.getter!!)
         val getterName: String? = if (getterSelector != name) getterSelector else null
 
-        return ObjCProperty(name, property, type, attributes, setterName, getterName, listOf(swiftNameAttribute(name)))
+        val declarationAttributes = mutableListOf(swiftNameAttribute(name))
+        declarationAttributes.addIfNotNull(mapper.getDeprecation(property)?.toDeprecationAttribute())
+
+        return ObjCProperty(name, property, type, attributes, setterName, getterName, declarationAttributes)
     }
 
-    private fun buildMethod(method: FunctionDescriptor, baseMethod: FunctionDescriptor, objCExportScope: ObjCExportScope): ObjCMethod {
+    private fun buildMethod(
+            method: FunctionDescriptor,
+            baseMethod: FunctionDescriptor,
+            objCExportScope: ObjCExportScope,
+            unavailable: Boolean = false
+    ): ObjCMethod {
         fun collectParameters(baseMethodBridge: MethodBridge, method: FunctionDescriptor): List<ObjCParameter> {
             fun unifyName(initialName: String, usedNames: Set<String>): String {
-                var unique = initialName
+                var unique = initialName.toValidObjCSwiftIdentifier()
                 while (unique in usedNames || unique in cKeywords) {
                     unique += "_"
                 }
@@ -639,8 +648,14 @@ internal class ObjCExportTranslatorImpl(
                     MethodBridgeValueParameter.ErrorOutParameter ->
                         ObjCPointerType(ObjCNullableReferenceType(ObjCClassType("NSError")), nullable = true)
 
-                    is MethodBridgeValueParameter.KotlinResultOutParameter ->
-                        ObjCPointerType(mapType(method.returnType!!, bridge.bridge, objCExportScope), nullable = true)
+                    is MethodBridgeValueParameter.KotlinResultOutParameter -> {
+                        val resultType = mapType(method.returnType!!, bridge.bridge, objCExportScope)
+                        // Note: non-nullable reference or pointer type is unusable here
+                        // when passing reference to local variable from Swift because it
+                        // would require a non-null initializer then.
+                        val pointeeType = resultType.makeNullableIfReferenceOrPointer()
+                        ObjCPointerType(pointeeType, nullable = true)
+                    }
                 }
 
                 parameters += ObjCParameter(uniqueName, p, type)
@@ -664,6 +679,12 @@ internal class ObjCExportTranslatorImpl(
 
         if (method is ConstructorDescriptor && !method.constructedClass.isArray) { // TODO: check methodBridge instead.
             attributes += "objc_designated_initializer"
+        }
+
+        if (unavailable) {
+            attributes += "unavailable"
+        } else {
+            attributes.addIfNotNull(mapper.getDeprecation(method)?.toDeprecationAttribute())
         }
 
         return ObjCMethod(method, isInstanceMethod, returnType, selectorParts, parameters, attributes)
@@ -783,6 +804,11 @@ internal class ObjCExportTranslatorImpl(
             return mapObjCObjectReferenceTypeIgnoringNullability(classDescriptor)
         }
 
+        if (!mapper.shouldBeExposed(classDescriptor)) {
+            // There are number of tricky corner cases getting here.
+            return ObjCIdType
+        }
+
         return if (classDescriptor.isInterface) {
             ObjCProtocolType(referenceProtocol(classDescriptor).objCName)
         } else {
@@ -884,7 +910,7 @@ internal class ObjCExportTranslatorImpl(
                 ObjCValueType.UNSIGNED_LONG_LONG -> ObjCPrimitiveType("uint64_t")
                 ObjCValueType.FLOAT -> ObjCPrimitiveType("float")
                 ObjCValueType.DOUBLE -> ObjCPrimitiveType("double")
-                ObjCValueType.POINTER -> ObjCPointerType(ObjCVoidType)
+                ObjCValueType.POINTER -> ObjCPointerType(ObjCVoidType, kotlinType.binaryRepresentationIsNullable())
             }
             // TODO: consider other namings.
         }
@@ -972,6 +998,13 @@ abstract class ObjCExportHeaderGenerator internal constructor(
         }
 
         add("NS_ASSUME_NONNULL_BEGIN")
+        add("#pragma clang diagnostic push")
+        listOf(
+                "-Wunknown-warning-option",
+                "-Wnullability"
+        ).forEach {
+            add("#pragma clang diagnostic ignored \"$it\"")
+        }
         add("")
 
         stubs.forEach {
@@ -979,6 +1012,7 @@ abstract class ObjCExportHeaderGenerator internal constructor(
             add("")
         }
 
+        add("#pragma clang diagnostic pop")
         add("NS_ASSUME_NONNULL_END")
     }
 
@@ -1091,11 +1125,11 @@ abstract class ObjCExportHeaderGenerator internal constructor(
     }
 
     internal fun referenceClass(objCName: String, descriptor: ClassDescriptor? = null) {
-        if (objcGenerics || descriptor !in generatedClasses) classForwardDeclarations += objCName
+        classForwardDeclarations += objCName
     }
 
     internal fun referenceProtocol(objCName: String, descriptor: ClassDescriptor? = null) {
-        if (descriptor !in generatedClasses) protocolForwardDeclarations += objCName
+        protocolForwardDeclarations += objCName
     }
 }
 
@@ -1180,3 +1214,16 @@ internal fun Variance.objcDeclaration():String = when(this){
 private fun computeSuperClassType(descriptor: ClassDescriptor): KotlinType? = descriptor.typeConstructor.supertypes.filter { !it.isInterface() }.firstOrNull()
 
 internal const val OBJC_SUBCLASSING_RESTRICTED = "objc_subclassing_restricted"
+
+private fun Deprecation.toDeprecationAttribute(): String {
+    val attribute = when (deprecationLevel) {
+        DeprecationLevelValue.WARNING -> "deprecated"
+        DeprecationLevelValue.ERROR, DeprecationLevelValue.HIDDEN -> "unavailable"
+    }
+
+    // TODO: consider avoiding code generation for unavailable.
+
+    val message = this.message.orEmpty()
+
+    return "$attribute(\"$message\")"
+}
